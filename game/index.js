@@ -64,7 +64,9 @@ function generateMap() {
   }
   
   // Ensure player spawn point is clear
-  grid[1][1].type = 'empty';
+  if (grid[1] && grid[1][1]) {
+    grid[1][1].type = 'empty';
+  }
   
   // Update the store
   store.setState({
@@ -75,17 +77,22 @@ function generateMap() {
   });
 }
 
-// Player Component
-function PlayerElements() {
+// Player Component - Create DOM elements for players
+function renderPlayers() {
   const { players } = store.getState();
+  const playerElements = [];
   
-  return players.map(player => 
-    createElement('div', {
-      class: `player player-${player.id}`,
-      style: `transform: translate(${player.x * CELL_SIZE}px, ${player.y * CELL_SIZE}px);`,
-      'data-player-id': player.id
-    })
-  );
+  players.forEach(player => {
+    const playerElement = document.createElement('div');
+    playerElement.className = `player player-${player.id}`;
+    playerElement.style.left = `${player.x * CELL_SIZE}px`;
+    playerElement.style.top = `${player.y * CELL_SIZE}px`;
+    playerElement.dataset.playerId = player.id;
+    
+    playerElements.push(playerElement);
+  });
+  
+  return playerElements;
 }
 
 // Components
@@ -97,23 +104,34 @@ function GameGrid() {
   const { map } = store.getState();
   const { grid } = map;
   
-  // Create a container for both the grid and players
-  const gameContainer = createElement('div', { class: 'game-container' },
-    createElement('div', { class: 'game-grid' },
-      ...grid.flat().map(cell => 
-        createElement('div', { 
-          class: `cell cell-${cell.type}`,
-          'data-x': cell.x,
-          'data-y': cell.y
-        })
-      )
+  // Create the grid cells
+  const gridElement = createElement('div', { class: 'game-grid' },
+    ...grid.flat().map(cell => 
+      createElement('div', { 
+        class: `cell cell-${cell.type}`,
+        'data-x': cell.x,
+        'data-y': cell.y
+      })
     )
   );
   
-  // Add players to the container
-  PlayerElements().forEach(player => {
-    gameContainer.children.push(player);
-  });
+  // Create the game container
+  const gameContainer = createElement('div', { class: 'game-container' }, gridElement);
+  
+  // After the component is mounted, add the player elements
+  setTimeout(() => {
+    const container = document.querySelector('.game-container');
+    if (container) {
+      // Remove any existing players
+      const existingPlayers = container.querySelectorAll('.player');
+      existingPlayers.forEach(p => p.remove());
+      
+      // Add new player elements
+      renderPlayers().forEach(player => {
+        container.appendChild(player);
+      });
+    }
+  }, 0);
   
   return gameContainer;
 }
@@ -145,20 +163,7 @@ function GameApp() {
   );
 }
 
-// Debounce function to prevent too many key presses
-function debounce(func, wait) {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
-}
-
-// Basic keyboard controls with movement delay to prevent janky movement
+// Movement handling with delay to prevent janky movement
 let isMoving = false;
 const moveDelay = 150; // ms between moves
 
@@ -201,10 +206,22 @@ function handleKeyDown(e) {
       )
     });
     
+    // Update player position visually without re-rendering the whole app
+    updatePlayerPosition(player.id, newX, newY);
+    
     // Reset moving flag after delay
     setTimeout(() => {
       isMoving = false;
     }, moveDelay);
+  }
+}
+
+// Update player position directly in the DOM
+function updatePlayerPosition(playerId, x, y) {
+  const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
+  if (playerElement) {
+    playerElement.style.left = `${x * CELL_SIZE}px`;
+    playerElement.style.top = `${y * CELL_SIZE}px`;
   }
 }
 
@@ -224,8 +241,12 @@ function isValidMove(x, y) {
   }
   
   // Check for walls and blocks
-  const cell = grid[y][x];
-  if (cell.type !== 'empty') {
+  if (grid[y] && grid[y][x]) {
+    const cell = grid[y][x];
+    if (cell.type !== 'empty') {
+      return false;
+    }
+  } else {
     return false;
   }
   
@@ -267,10 +288,35 @@ function placeBomb(player) {
     bombs: [...bombs, newBomb]
   });
   
+  // Add bomb to the DOM
+  addBombToDOM(newBomb);
+  
   // Start bomb timer
   setTimeout(() => {
     explodeBomb(newBomb);
   }, newBomb.timer);
+}
+
+// Add bomb to DOM without re-rendering
+function addBombToDOM(bomb) {
+  const container = document.querySelector('.game-container');
+  if (container) {
+    const bombElement = document.createElement('div');
+    bombElement.className = 'bomb';
+    bombElement.style.left = `${(bomb.x + 0.5) * CELL_SIZE}px`;
+    bombElement.style.top = `${(bomb.y + 0.5) * CELL_SIZE}px`;
+    bombElement.dataset.bombId = bomb.id;
+    
+    container.appendChild(bombElement);
+  }
+}
+
+// Remove bomb from DOM without re-rendering
+function removeBombFromDOM(bombId) {
+  const bombElement = document.querySelector(`.bomb[data-bomb-id="${bombId}"]`);
+  if (bombElement) {
+    bombElement.remove();
+  }
 }
 
 // Bomb explosion
@@ -281,39 +327,17 @@ function explodeBomb(bomb) {
   // Remove this bomb from the bombs array
   const updatedBombs = bombs.filter(b => b.id !== bomb.id);
   
-  // Create explosions array
-  const explosions = [];
-  explosions.push({ x: bomb.x, y: bomb.y }); // Center
-  
-  // Check in all four directions
-  const directions = [
-    { dx: 0, dy: -1 }, // Up
-    { dx: 0, dy: 1 },  // Down
-    { dx: -1, dy: 0 }, // Left
-    { dx: 1, dy: 0 }   // Right
-  ];
-  
-  // Update state with explosions
+  // Update state with updated bombs
   store.setState({ bombs: updatedBombs });
+  
+  // Remove bomb from DOM
+  removeBombFromDOM(bomb.id);
   
   // For a full implementation, we would:
   // 1. Check for blocks to destroy
   // 2. Check for players hit
   // 3. Animate explosions
   // 4. Generate power-ups
-}
-
-// Render bombs on the grid
-function BombElements() {
-  const { bombs } = store.getState();
-  
-  return bombs.map(bomb => 
-    createElement('div', {
-      class: 'bomb',
-      style: `left: ${(bomb.x + 0.5) * CELL_SIZE}px; top: ${(bomb.y + 0.5) * CELL_SIZE}px;`,
-      'data-bomb-id': bomb.id
-    })
-  );
 }
 
 // Game loop

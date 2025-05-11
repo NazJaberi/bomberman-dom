@@ -74,7 +74,7 @@
     width: var(--cell-size);
     height: var(--cell-size);
     border-radius: 50%;
-    transition: transform 0.15s ease; 
+    transition: all 0.15s ease; 
     z-index: 10;
     box-sizing: border-box;
     border: 2px solid #fff; /* Add a border for visibility */

@@ -6,6 +6,11 @@ const app = createApp('#app');
 const CELL_SIZE = 40;
 const GRID_SIZE = 15;
 
+// Debugging helper
+function logAssetLoad(type, path) {
+  console.log(`Loading ${type} asset: ${path}`);
+}
+
 // Initial game state
 store.setState({
     gameState: 'init', 
@@ -91,11 +96,16 @@ function renderPlayers() {
       playerElement.dataset.playerId = player.id;
       
       // Set the default direction to 'front'
-      playerElement.dataset.direction = player.direction || 'front';
-      
-      // Set the sprite image based on direction
       const direction = player.direction || 'front';
-      playerElement.style.backgroundImage = `url('./assets/${direction}.png')`;
+      playerElement.dataset.direction = direction;
+      
+      // Add class for the direction instead of setting style directly
+      playerElement.classList.add(`player-direction-${direction}`);
+      
+      // Set the background image after the element is added to the DOM
+      setTimeout(() => {
+        playerElement.style.backgroundImage = `url('./assets/${direction}.png')`;
+      }, 0);
       
       playerElements.push(playerElement);
     });
@@ -109,40 +119,60 @@ function GameTitle() {
 }
 
 function GameGrid() {
-  const { map } = store.getState();
-  const { grid } = map;
-  
-  // Create the grid cells
-  const gridElement = createElement('div', { class: 'game-grid' },
-    ...grid.flat().map(cell => 
-      createElement('div', { 
-        class: `cell cell-${cell.type}`,
-        'data-x': cell.x,
-        'data-y': cell.y
+    const { map } = store.getState();
+    const { grid } = map;
+    
+    console.log("Creating game grid with cells:", grid.length * grid[0].length);
+    
+    // Create the grid cells
+    const gridElement = createElement('div', { class: 'game-grid' },
+      ...grid.flat().map(cell => {
+        // Create element with appropriate class and data attributes
+        const cellElement = createElement('div', { 
+          class: `cell cell-${cell.type}`,
+          'data-x': cell.x,
+          'data-y': cell.y,
+          'data-cell-type': cell.type // Add this to help with styling
+        });
+        
+        return cellElement;
       })
-    )
-  );
-  
-  // Create the game container
-  const gameContainer = createElement('div', { class: 'game-container' }, gridElement);
-  
-  // After the component is mounted, add the player elements
-  setTimeout(() => {
-    const container = document.querySelector('.game-container');
-    if (container) {
-      // Remove any existing players
-      const existingPlayers = container.querySelectorAll('.player');
-      existingPlayers.forEach(p => p.remove());
-      
-      // Add new player elements
-      renderPlayers().forEach(player => {
-        container.appendChild(player);
-      });
-    }
-  }, 0);
-  
-  return gameContainer;
-}
+    );
+    
+    // Create the game container
+    const gameContainer = createElement('div', { class: 'game-container' }, gridElement);
+    
+    // After the component is mounted, add the player elements and update cell images
+    setTimeout(() => {
+      const container = document.querySelector('.game-container');
+      if (container) {
+        console.log('Game container found, adding players');
+        
+        // Update cell background images after mounting
+        document.querySelectorAll('.cell').forEach(cell => {
+          const cellType = cell.dataset.cellType;
+          if (cellType === 'wall') {
+            cell.style.backgroundImage = "url('./assets/wall.png')";
+          } else if (cellType === 'block') {
+            cell.style.backgroundImage = "url('./assets/block.png')";
+          }
+        });
+        
+        // Remove any existing players
+        const existingPlayers = container.querySelectorAll('.player');
+        existingPlayers.forEach(p => p.remove());
+        
+        // Add new player elements
+        renderPlayers().forEach(player => {
+          container.appendChild(player);
+        });
+      } else {
+        console.error('Game container not found!');
+      }
+    }, 0);
+    
+    return gameContainer;
+  }
 
 function PlayerInfo() {
   const { players } = store.getState();
@@ -160,10 +190,12 @@ function GameApp() {
   const { gameState, map } = store.getState();
   
   if (!map.grid.length) {
+    console.log("Generating map...");
     generateMap();
     return GameApp(); 
   }
   
+  console.log("Rendering GameApp");
   return createElement('div', { class: 'game-app' },
     GameTitle(),
     PlayerInfo(),
@@ -245,7 +277,9 @@ function handleKeyDown(e) {
     const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
     if (playerElement) {
       playerElement.dataset.direction = direction;
-      playerElement.style.backgroundImage = `url('./assets/${direction}.png')`;
+      const assetPath = `./assets/${direction}.png`;
+      logAssetLoad('player update', assetPath);
+      playerElement.style.backgroundImage = `url('${assetPath}')`;
     }
   }
   
@@ -313,7 +347,8 @@ function placeBomb(player) {
     y: player.y,
     range: player.bombRange,
     timer: 3000, // 3 seconds until explosion
-    countdown: 3 // Visual countdown
+    countdown: 3, // Visual countdown
+    stage: 1 // Animation stage (1, 2, 3)
   };
   
   // Add to bombs list
@@ -340,15 +375,15 @@ function addBombToDOM(bomb) {
       const bombElement = document.createElement('div');
       bombElement.className = 'bomb';
       // Fix positioning: center the bomb in the cell
-      bombElement.style.left = `${bomb.x * CELL_SIZE + CELL_SIZE/2}px`;
-      bombElement.style.top = `${bomb.y * CELL_SIZE + CELL_SIZE/2}px`;
+      bombElement.style.left = `${bomb.x * CELL_SIZE}px`;
+      bombElement.style.top = `${bomb.y * CELL_SIZE}px`;
       bombElement.dataset.bombId = bomb.id;
+      bombElement.dataset.stage = bomb.stage;
       
-      // Add countdown text element
-      const countdownElement = document.createElement('div');
-      countdownElement.className = 'countdown';
-      countdownElement.textContent = bomb.countdown;
-      bombElement.appendChild(countdownElement);
+      // Use sprite image instead of CSS
+      const assetPath = `./assets/bomb${bomb.stage}.png`;
+      logAssetLoad('bomb', assetPath);
+      bombElement.style.backgroundImage = `url('${assetPath}')`;
       
       container.appendChild(bombElement);
     }
@@ -357,13 +392,21 @@ function addBombToDOM(bomb) {
 // Start bomb countdown animation
 function startBombCountdown(bomb) {
   let countdown = bomb.countdown;
+  let stage = 1;
+  
   const countdownInterval = setInterval(() => {
     countdown--;
     
-    // Update countdown display
-    const countdownElement = document.querySelector(`.bomb[data-bomb-id="${bomb.id}"] .countdown`);
-    if (countdownElement) {
-      countdownElement.textContent = countdown;
+    // Update animation stage (cycles through 1-2-3)
+    stage = stage % 3 + 1;
+    
+    // Update bomb sprite
+    const bombElement = document.querySelector(`.bomb[data-bomb-id="${bomb.id}"]`);
+    if (bombElement) {
+      bombElement.dataset.stage = stage;
+      const assetPath = `./assets/bomb${stage}.png`;
+      logAssetLoad('bomb update', assetPath);
+      bombElement.style.backgroundImage = `url('${assetPath}')`;
     }
     
     if (countdown <= 0 || !document.querySelector(`.bomb[data-bomb-id="${bomb.id}"]`)) {
@@ -393,6 +436,9 @@ function explodeBomb(bomb) {
   
   // Add center explosion
   newExplosions.push({ x: bomb.x, y: bomb.y, type: 'center' });
+  
+  // Track destroyed blocks for potential power-up spawning
+  const destroyedBlocks = [];
   
   // Check in all four directions
   const directions = [
@@ -430,6 +476,9 @@ function explodeBomb(bomb) {
         const updatedGrid = [...grid];
         updatedGrid[newY][newX] = { ...cell, type: 'empty' };
         
+        // Track this block for power-up spawning
+        destroyedBlocks.push({ x: newX, y: newY });
+        
         // Update the store with the new grid
         store.setState({
           map: {
@@ -440,11 +489,6 @@ function explodeBomb(bomb) {
         
         // Update the cell visually
         updateCellType(newX, newY, 'empty');
-        
-        // Potentially spawn a power-up (30% chance)
-        if (Math.random() < 0.3) {
-          spawnPowerUp(newX, newY);
-        }
         
         break; // Stop in this direction after hitting a block
       }
@@ -482,6 +526,13 @@ function explodeBomb(bomb) {
     explosions: allExplosions
   });
   
+  // Spawn power-ups from destroyed blocks (approximately 30% chance)
+  destroyedBlocks.forEach(block => {
+    if (Math.random() < 0.4) { // Increased chance for testing
+      spawnPowerUp(block.x, block.y);
+    }
+  });
+  
   // Clean up explosions after animation
   setTimeout(() => {
     removeExplosions(newExplosions);
@@ -493,6 +544,19 @@ function updateCellType(x, y, newType) {
   const cellElement = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
   if (cellElement) {
     cellElement.className = `cell cell-${newType}`;
+    
+    // Update background image
+    if (newType === 'wall') {
+      const assetPath = './assets/wall.png';
+      logAssetLoad('wall update', assetPath);
+      cellElement.style.backgroundImage = `url('${assetPath}')`;
+    } else if (newType === 'block') {
+      const assetPath = './assets/block.png';
+      logAssetLoad('block update', assetPath);
+      cellElement.style.backgroundImage = `url('${assetPath}')`;
+    } else {
+      cellElement.style.backgroundImage = "";
+    }
   }
 }
 
@@ -525,7 +589,7 @@ function addPowerUpToDOM(powerUp) {
     if (container) {
       const powerUpElement = document.createElement('div');
       powerUpElement.className = `powerup powerup-${powerUp.type}`;
-      // Fix positioning: center the power-up in the cell
+      // Center the power-up in the cell
       powerUpElement.style.left = `${powerUp.x * CELL_SIZE + CELL_SIZE/2}px`;
       powerUpElement.style.top = `${powerUp.y * CELL_SIZE + CELL_SIZE/2}px`;
       powerUpElement.dataset.powerupId = powerUp.id;
@@ -673,6 +737,29 @@ function applyPowerUp(player, powerUp) {
   store.setState({ players: updatedPlayers });
 }
 
+// Check assets
+function checkAssets() {
+  const assetPaths = [
+    './assets/front.png',
+    './assets/back.png',
+    './assets/left.png',
+    './assets/right.png',
+    './assets/wall.png',
+    './assets/block.png',
+    './assets/bomb1.png',
+    './assets/bomb2.png',
+    './assets/bomb3.png'
+  ];
+  
+  console.log('Checking asset availability...');
+  assetPaths.forEach(path => {
+    const img = new Image();
+    img.onload = () => console.log(`✅ Asset loaded: ${path}`);
+    img.onerror = () => console.error(`❌ Asset failed to load: ${path}`);
+    img.src = path;
+  });
+}
+
 // Game loop
 function gameLoop() {
   // Check for power-up collections
@@ -684,6 +771,11 @@ function gameLoop() {
 
 // Initialize
 function init() {
+  console.log("Starting game initialization...");
+  
+  // Check assets
+  checkAssets();
+  
   // Subscribe to state changes
   store.subscribe(render);
   
@@ -695,10 +787,13 @@ function init() {
   
   // Initial render
   render();
+  
+  console.log("Game initialization complete!");
 }
 
 // Render function
 function render() {
+  console.log("Rendering game...");
   app.mount(GameApp());
 }
 

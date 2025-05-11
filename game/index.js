@@ -304,23 +304,24 @@ function placeBomb(player) {
 
 // Add bomb to DOM without re-rendering
 function addBombToDOM(bomb) {
-  const container = document.querySelector('.game-container');
-  if (container) {
-    const bombElement = document.createElement('div');
-    bombElement.className = 'bomb';
-    bombElement.style.left = `${(bomb.x + 0.5) * CELL_SIZE}px`;
-    bombElement.style.top = `${(bomb.y + 0.5) * CELL_SIZE}px`;
-    bombElement.dataset.bombId = bomb.id;
-    
-    // Add countdown text element
-    const countdownElement = document.createElement('div');
-    countdownElement.className = 'countdown';
-    countdownElement.textContent = bomb.countdown;
-    bombElement.appendChild(countdownElement);
-    
-    container.appendChild(bombElement);
+    const container = document.querySelector('.game-container');
+    if (container) {
+      const bombElement = document.createElement('div');
+      bombElement.className = 'bomb';
+      // Fix positioning: center the bomb in the cell
+      bombElement.style.left = `${bomb.x * CELL_SIZE + CELL_SIZE/2}px`;
+      bombElement.style.top = `${bomb.y * CELL_SIZE + CELL_SIZE/2}px`;
+      bombElement.dataset.bombId = bomb.id;
+      
+      // Add countdown text element
+      const countdownElement = document.createElement('div');
+      countdownElement.className = 'countdown';
+      countdownElement.textContent = bomb.countdown;
+      bombElement.appendChild(countdownElement);
+      
+      container.appendChild(bombElement);
+    }
   }
-}
 
 // Start bomb countdown animation
 function startBombCountdown(bomb) {
@@ -488,19 +489,19 @@ function spawnPowerUp(x, y) {
   addPowerUpToDOM(newPowerUp);
 }
 
-// Add power-up to DOM
 function addPowerUpToDOM(powerUp) {
-  const container = document.querySelector('.game-container');
-  if (container) {
-    const powerUpElement = document.createElement('div');
-    powerUpElement.className = `powerup powerup-${powerUp.type}`;
-    powerUpElement.style.left = `${(powerUp.x + 0.5) * CELL_SIZE}px`;
-    powerUpElement.style.top = `${(powerUp.y + 0.5) * CELL_SIZE}px`;
-    powerUpElement.dataset.powerupId = powerUp.id;
-    
-    container.appendChild(powerUpElement);
+    const container = document.querySelector('.game-container');
+    if (container) {
+      const powerUpElement = document.createElement('div');
+      powerUpElement.className = `powerup powerup-${powerUp.type}`;
+      // Fix positioning: center the power-up in the cell
+      powerUpElement.style.left = `${powerUp.x * CELL_SIZE + CELL_SIZE/2}px`;
+      powerUpElement.style.top = `${powerUp.y * CELL_SIZE + CELL_SIZE/2}px`;
+      powerUpElement.dataset.powerupId = powerUp.id;
+      
+      container.appendChild(powerUpElement);
+    }
   }
-}
 
 // Add explosion to DOM
 function addExplosionToDOM(explosion) {

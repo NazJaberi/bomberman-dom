@@ -73,11 +73,11 @@
     position: absolute;
     width: var(--cell-size);
     height: var(--cell-size);
-    border-radius: 50%;
-    transition: all 0.15s ease; 
+    transition: all 0.15s ease;
     z-index: 10;
-    box-sizing: border-box;
-    border: 2px solid #fff; /* Add a border for visibility */
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
   }
   
   .bomb {
@@ -233,29 +233,15 @@
     to { transform: translate(-50%, -50%) translateY(-5px); }
   }
 
-.player {
+  .player {
     position: absolute;
     width: var(--cell-size);
     height: var(--cell-size);
-    border-radius: 50%;
-    transition: transform 0.2s ease;
+    transition: all 0.15s ease;
     z-index: 10;
-  }
-  
-  .player-1 {
-    background-color: #FF0000;
-  }
-  
-  .player-2 {
-    background-color: #0000FF;
-  }
-  
-  .player-3 {
-    background-color: #00FF00;
-  }
-  
-  .player-4 {
-    background-color: #FFFF00;
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
   }
   
   .player-info {

@@ -8,27 +8,27 @@ const GRID_SIZE = 15;
 
 // Initial game state
 store.setState({
-  gameState: 'init', 
-  map: {
-    size: GRID_SIZE, 
-    grid: [], 
-  },
-  players: [
-    // Add a single player at a valid spawn point inside the grid
-    {
-      id: 1,
-      x: 1, // Start at a position that's definitely inside and clear
-      y: 1,
-      lives: 3,
-      speed: 1,
-      bombCount: 1,
-      bombRange: 1
-    }
-  ], 
-  bombs: [], 
-  powerups: [],
-  explosions: []
-});
+    gameState: 'init', 
+    map: {
+      size: GRID_SIZE, 
+      grid: [], 
+    },
+    players: [
+      {
+        id: 1,
+        x: 1,
+        y: 1,
+        lives: 3,
+        speed: 1,
+        bombCount: 1,
+        bombRange: 1,
+        direction: 'front' // Default direction
+      }
+    ],
+    bombs: [],
+    powerups: [],
+    explosions: []
+  });
 
 // Generate initial map
 function generateMap() {
@@ -80,20 +80,27 @@ function generateMap() {
 
 // Player Component - Create DOM elements for players
 function renderPlayers() {
-  const { players } = store.getState();
-  const playerElements = [];
-  
-  players.forEach(player => {
-    const playerElement = document.createElement('div');
-    playerElement.className = `player player-${player.id}`;
-    playerElement.style.left = `${player.x * CELL_SIZE}px`;
-    playerElement.style.top = `${player.y * CELL_SIZE}px`;
-    playerElement.dataset.playerId = player.id;
+    const { players } = store.getState();
+    const playerElements = [];
     
-    playerElements.push(playerElement);
-  });
-  
-  return playerElements;
+    players.forEach(player => {
+      const playerElement = document.createElement('div');
+      playerElement.className = `player player-${player.id}`;
+      playerElement.style.left = `${player.x * CELL_SIZE}px`;
+      playerElement.style.top = `${player.y * CELL_SIZE}px`;
+      playerElement.dataset.playerId = player.id;
+      
+      // Set the default direction to 'front'
+      playerElement.dataset.direction = player.direction || 'front';
+      
+      // Set the sprite image based on direction
+      const direction = player.direction || 'front';
+      playerElement.style.backgroundImage = `url('./assets/${direction}.png')`;
+      
+      playerElements.push(playerElement);
+    });
+    
+    return playerElements;
 }
 
 // Components
@@ -154,7 +161,7 @@ function GameApp() {
   
   if (!map.grid.length) {
     generateMap();
-    return GameApp(); // Re-render with the generated map
+    return GameApp(); 
   }
   
   return createElement('div', { class: 'game-app' },
@@ -168,63 +175,87 @@ function GameApp() {
 let isMoving = false;
 const moveDelay = 150; // ms between moves
 
+// Update the handleKeyDown function to change player direction
 function handleKeyDown(e) {
-  if (isMoving) return;
-  
-  const { players } = store.getState();
-  const player = players[0]; // First player
-  
-  let newX = player.x;
-  let newY = player.y;
-  
-  switch (e.key) {
-    case 'ArrowUp':
-      newY -= player.speed;
-      break;
-    case 'ArrowDown':
-      newY += player.speed;
-      break;
-    case 'ArrowLeft':
-      newX -= player.speed;
-      break;
-    case 'ArrowRight':
-      newX += player.speed;
-      break;
-    case ' ': // Space bar to place bombs
-      placeBomb(player);
-      return;
-    default:
-      return; // Don't handle other keys
+    if (isMoving) return;
+    
+    const { players } = store.getState();
+    const player = players[0]; // First player
+    
+    let newX = player.x;
+    let newY = player.y;
+    let newDirection = player.direction;
+    
+    switch (e.key) {
+      case 'ArrowUp':
+        newY -= player.speed;
+        newDirection = 'back';
+        break;
+      case 'ArrowDown':
+        newY += player.speed;
+        newDirection = 'front';
+        break;
+      case 'ArrowLeft':
+        newX -= player.speed;
+        newDirection = 'left';
+        break;
+      case 'ArrowRight':
+        newX += player.speed;
+        newDirection = 'right';
+        break;
+      case ' ': // Space bar to place bombs
+        placeBomb(player);
+        return;
+      default:
+        return; // Don't handle other keys
+    }
+    
+    // Update direction even if we can't move
+    if (newDirection !== player.direction) {
+      store.setState({
+        players: players.map(p => 
+          p.id === player.id ? { ...p, direction: newDirection } : p
+        )
+      });
+      
+      // Update player sprite without full re-render
+      updatePlayerSprite(player.id, newDirection);
+    }
+    
+    // Simple collision detection for movement
+    if (isValidMove(newX, newY)) {
+      isMoving = true;
+      
+      store.setState({
+        players: players.map(p => 
+          p.id === player.id ? { ...p, x: newX, y: newY, direction: newDirection } : p
+        )
+      });
+      
+      updatePlayerPosition(player.id, newX, newY);
+      
+      // Reset moving flag after delay
+      setTimeout(() => {
+        isMoving = false;
+      }, moveDelay);
+    }
   }
   
-  // Simple collision detection
-  if (isValidMove(newX, newY)) {
-    isMoving = true;
-    
-    store.setState({
-      players: players.map(p => 
-        p.id === player.id ? { ...p, x: newX, y: newY } : p
-      )
-    });
-    
-    // Update player position visually without re-rendering the whole app
-    updatePlayerPosition(player.id, newX, newY);
-    
-    // Reset moving flag after delay
-    setTimeout(() => {
-      isMoving = false;
-    }, moveDelay);
+  function updatePlayerSprite(playerId, direction) {
+    const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
+    if (playerElement) {
+      playerElement.dataset.direction = direction;
+      playerElement.style.backgroundImage = `url('./assets/${direction}.png')`;
+    }
   }
-}
-
-// Update player position directly in the DOM
-function updatePlayerPosition(playerId, x, y) {
-  const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
-  if (playerElement) {
-    playerElement.style.left = `${x * CELL_SIZE}px`;
-    playerElement.style.top = `${y * CELL_SIZE}px`;
+  
+  function updatePlayerPosition(playerId, x, y) {
+    const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
+    if (playerElement) {
+      playerElement.style.left = `${x * CELL_SIZE}px`;
+      playerElement.style.top = `${y * CELL_SIZE}px`;
+    }
   }
-}
 
 // Setup keyboard controls
 function setupKeyboardControls() {

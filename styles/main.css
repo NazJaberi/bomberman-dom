@@ -40,6 +40,7 @@
     height: calc(var(--grid-size) * var(--cell-size));
     border: 2px solid #333;
     background-color: #000;
+    overflow: hidden; 
   }
   
   .game-grid {
@@ -73,8 +74,10 @@
     width: var(--cell-size);
     height: var(--cell-size);
     border-radius: 50%;
-    transition: transform 0.2s ease;
+    transition: transform 0.15s ease; 
     z-index: 10;
+    box-sizing: border-box;
+    border: 2px solid #fff; /* Add a border for visibility */
   }
   
   .bomb {
@@ -120,4 +123,43 @@
   @keyframes powerup-float {
     from { transform: translateY(0); }
     to { transform: translateY(-5px); }
+  }
+
+.player {
+    position: absolute;
+    width: var(--cell-size);
+    height: var(--cell-size);
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+    z-index: 10;
+  }
+  
+  .player-1 {
+    background-color: #FF0000;
+  }
+  
+  .player-2 {
+    background-color: #0000FF;
+  }
+  
+  .player-3 {
+    background-color: #00FF00;
+  }
+  
+  .player-4 {
+    background-color: #FFFF00;
+  }
+  
+  .player-info {
+    display: flex;
+    justify-content: space-between;
+    width: calc(var(--grid-size) * var(--cell-size));
+    margin-bottom: 0.5rem;
+    padding: 0.5rem;
+    background-color: #333;
+    border-radius: 5px;
+  }
+  
+  .player-info > div {
+    margin: 0 0.5rem;
   }

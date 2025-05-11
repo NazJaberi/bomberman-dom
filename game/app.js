@@ -1,238 +1,292 @@
-import { createApp, createElement, store, router, createEditableElement } from '../src/index.js';
+import { createApp, createElement, store } from '../src/index.js';
 
-// Initialize the app state
+const app = createApp('#app');
+
+// Initial game state
 store.setState({
-  todos: [],
-  filter: 'all'
-  // Note: We don't need editing state here anymore as it's handled by the framework
+  gameState: 'init', 
+  map: {
+    size: 15, 
+    grid: [], 
+  },
+  players: [
+    // Add a single player for testing
+    {
+      id: 1,
+      x: 1,
+      y: 1,
+      lives: 3,
+      speed: 1,
+      bombCount: 1,
+      bombRange: 1
+    }
+  ], 
+  bombs: [], 
+  powerups: [] 
 });
 
-// Event handlers
-function addTodo(e) {
-  if (e.key === 'Enter') {
-    const text = e.target.value.trim();
-    if (text) {
-      const { todos } = store.getState();
-      store.setState({
-        todos: [...todos, {
-          id: Date.now(),
-          text,
-          completed: false
-        }]
-      });
-      e.target.value = '';
-    }
-  }
-}
-
-function toggleTodo(id) {
-  const { todos } = store.getState();
-  store.setState({
-    todos: todos.map(todo => 
-      todo.id === id ? { ...todo, completed: !todo.completed } : todo
-    )
-  });
-}
-
-function removeTodo(id) {
-  const { todos } = store.getState();
-  store.setState({
-    todos: todos.filter(todo => todo.id !== id)
-  });
-}
-
-function clearCompleted() {
-  const { todos } = store.getState();
-  store.setState({
-    todos: todos.filter(todo => !todo.completed)
-  });
-}
-
-function toggleAll(e) {
-  const { todos } = store.getState();
-  const completed = e.target.checked;
-  store.setState({
-    todos: todos.map(todo => ({ ...todo, completed }))
-  });
-}
-
-function updateTodoText(id, newText) {
-  const { todos } = store.getState();
+// Generate initial map
+function generateMap() {
+  const { map } = store.getState();
+  const { size } = map;
+  const grid = [];
   
-  if (newText.trim() === '') {
-    // If the text is empty, remove the todo
-    store.setState({
-      todos: todos.filter(todo => todo.id !== id)
-    });
-  } else {
-    // Otherwise update the text
-    store.setState({
-      todos: todos.map(todo => 
-        todo.id === id ? { ...todo, text: newText } : todo
-      )
-    });
+  // Create the grid
+  for (let y = 0; y < size; y++) {
+    const row = [];
+    for (let x = 0; x < size; x++) {
+      let cellType = 'empty';
+      
+      // Create walls in a pattern (every other row and column)
+      if (x % 2 === 0 && y % 2 === 0) {
+        cellType = 'wall';
+      } 
+      // Add some random blocks (except at player spawn points)
+      else if (Math.random() < 0.3 && 
+              !((x < 2 && y < 2) || // top-left spawn
+                (x < 2 && y > size - 3) || // bottom-left spawn
+                (x > size - 3 && y < 2) || // top-right spawn
+                (x > size - 3 && y > size - 3))) { // bottom-right spawn
+        cellType = 'block';
+      }
+      
+      row.push({
+        x,
+        y,
+        type: cellType
+      });
+    }
+    grid.push(row);
   }
+  
+  // Update the store
+  store.setState({
+    map: {
+      ...map,
+      grid
+    }
+  });
 }
 
-function setFilter(filter) {
-  store.setState({ filter });
-  router.navigate(`/#/${filter === 'all' ? '' : filter}`);
+// Player Component
+function PlayerElements() {
+  const { players } = store.getState();
+  const cellSize = 40; // Should match CSS --cell-size
+  
+  return players.map(player => 
+    createElement('div', {
+      class: `player player-${player.id}`,
+      style: `transform: translate(${player.x * cellSize}px, ${player.y * cellSize}px);`,
+      'data-player-id': player.id
+    })
+  );
 }
 
 // Components
-function TodoItem(todo) {
-  return createElement('li', { 
-    class: todo.completed ? 'completed' : '',
-    key: todo.id 
-  }, 
-    createElement('div', { class: 'view' },
-      createElement('input', { 
-        class: 'toggle', 
-        type: 'checkbox', 
-        checked: todo.completed,
-        onclick: () => toggleTodo(todo.id)
-      }),
-      // Using the framework's createEditableElement function
-      createEditableElement(
-        todo.text, 
-        (newText) => updateTodoText(todo.id, newText),
-        { 
-          class: 'todo-label',
-          id: `todo-${todo.id}` 
-        }
-      ),
-      createElement('button', { 
-        class: 'destroy', 
-        onclick: () => removeTodo(todo.id)
-      })
-    )
-  );
+function GameTitle() {
+  return createElement('h1', { class: 'game-title' }, 'Bomberman DOM');
 }
 
-function TodoList() {
-  const { todos, filter } = store.getState();
+function GameGrid() {
+  const { map } = store.getState();
+  const { grid } = map;
   
-  const filteredTodos = todos.filter(todo => {
-    if (filter === 'active') return !todo.completed;
-    if (filter === 'completed') return todo.completed;
-    return true;
-  });
-  
-  return createElement('ul', { class: 'todo-list' },
-    ...filteredTodos.map(todo => TodoItem(todo))
-  );
-}
-
-function Footer() {
-  const { todos, filter } = store.getState();
-  const activeTodoCount = todos.filter(todo => !todo.completed).length;
-  const completedCount = todos.length - activeTodoCount;
-  
-  return createElement('footer', { class: 'footer' },
-    createElement('span', { class: 'todo-count' },
-      createElement('strong', {}, activeTodoCount.toString()),
-      ` item${activeTodoCount !== 1 ? 's' : ''} left`
-    ),
-    createElement('ul', { class: 'filters' },
-      createElement('li', {},
-        createElement('a', { 
-          class: filter === 'all' ? 'selected' : '',
-          href: '#/',
-          onclick: (e) => { e.preventDefault(); setFilter('all'); }
-        }, 'All')
-      ),
-      createElement('li', {},
-        createElement('a', { 
-          class: filter === 'active' ? 'selected' : '',
-          href: '#/active',
-          onclick: (e) => { e.preventDefault(); setFilter('active'); }
-        }, 'Active')
-      ),
-      createElement('li', {},
-        createElement('a', { 
-          class: filter === 'completed' ? 'selected' : '',
-          href: '#/completed',
-          onclick: (e) => { e.preventDefault(); setFilter('completed'); }
-        }, 'Completed')
+  return createElement('div', { class: 'game-container' },
+    createElement('div', { class: 'game-grid' },
+      ...grid.flat().map(cell => 
+        createElement('div', { 
+          class: `cell cell-${cell.type}`,
+          'data-x': cell.x,
+          'data-y': cell.y
+        })
       )
     ),
-    completedCount > 0 ?
-      createElement('button', { 
-        class: 'clear-completed',
-        onclick: clearCompleted
-      }, 'Clear completed')
-      : null
+    PlayerElements() // Add players to the grid
   );
 }
 
-function TodoApp() {
-  const { todos } = store.getState();
+function PlayerInfo() {
+  const { players } = store.getState();
+  const player = players[0]; // Get first player
   
-  return createElement('section', { class: 'todoapp' },
-    createElement('header', { class: 'header' },
-      createElement('h1', {}, 'todos'),
-      createElement('input', {
-        class: 'new-todo',
-        placeholder: 'What needs to be done?',
-        autofocus: true,
-        onkeydown: addTodo
-      })
-    ),
-    todos.length > 0 ? 
-      createElement('section', { class: 'main' },
-        createElement('input', {
-          id: 'toggle-all',
-          class: 'toggle-all',
-          type: 'checkbox',
-          checked: todos.every(todo => todo.completed),
-          onclick: toggleAll
-        }),
-        createElement('label', { for: 'toggle-all' }, 'Mark all as complete'),
-        TodoList()
-      ) : null,
-    todos.length > 0 ? Footer() : null
+  return createElement('div', { class: 'player-info' },
+    createElement('div', { class: 'player-lives' }, `Lives: ${player.lives}`),
+    createElement('div', { class: 'player-bombs' }, `Bombs: ${player.bombCount}`),
+    createElement('div', { class: 'player-range' }, `Range: ${player.bombRange}`),
+    createElement('div', { class: 'player-speed' }, `Speed: ${player.speed}`)
   );
 }
 
-// Create and mount the app
-const app = createApp('#app');
+function GameApp() {
+  const { gameState, map } = store.getState();
+  
+  if (!map.grid.length) {
+    generateMap();
+    return GameApp(); // Re-render with the generated map
+  }
+  
+  return createElement('div', { class: 'game-app' },
+    GameTitle(),
+    PlayerInfo(),
+    GameGrid()
+  );
+}
 
-// Setup routes
-router.addRoute('/', () => {
-  setFilter('all');
-  return null;
-});
+// Basic keyboard controls
+function setupKeyboardControls() {
+  document.addEventListener('keydown', (e) => {
+    const { players } = store.getState();
+    const player = players[0]; // First player
+    
+    let newX = player.x;
+    let newY = player.y;
+    
+    switch (e.key) {
+      case 'ArrowUp':
+        newY -= player.speed;
+        break;
+      case 'ArrowDown':
+        newY += player.speed;
+        break;
+      case 'ArrowLeft':
+        newX -= player.speed;
+        break;
+      case 'ArrowRight':
+        newX += player.speed;
+        break;
+      case ' ': // Space bar to place bombs
+        placeBomb(player);
+        return;
+      default:
+        return; // Don't handle other keys
+    }
+    
+    // Simple collision detection
+    if (isValidMove(newX, newY)) {
+      store.setState({
+        players: players.map(p => 
+          p.id === player.id ? { ...p, x: newX, y: newY } : p
+        )
+      });
+    }
+  });
+}
 
-router.addRoute('/#/active', () => {
-  setFilter('active');
-  return null;
-});
+// Check if the move is valid
+function isValidMove(x, y) {
+  const { map, bombs } = store.getState();
+  const { size, grid } = map;
+  
+  // Check boundaries
+  if (x < 0 || y < 0 || x >= size || y >= size) {
+    return false;
+  }
+  
+  // Check for walls and blocks
+  const cell = grid[y][x];
+  if (cell.type !== 'empty') {
+    return false;
+  }
+  
+  // Check for bombs
+  const bombAtPosition = bombs.some(bomb => bomb.x === x && bomb.y === y);
+  if (bombAtPosition) {
+    return false;
+  }
+  
+  return true;
+}
 
-router.addRoute('/#/completed', () => {
-  setFilter('completed');
-  return null;
-});
+// Place a bomb
+function placeBomb(player) {
+  const { bombs } = store.getState();
+  
+  // Check if player has bombs available
+  if (bombs.filter(bomb => bomb.playerId === player.id).length >= player.bombCount) {
+    return; // Can't place more bombs
+  }
+  
+  // Check if there's already a bomb at this position
+  if (bombs.some(bomb => bomb.x === player.x && bomb.y === player.y)) {
+    return; // Can't place bomb here
+  }
+  
+  // Create a new bomb
+  const newBomb = {
+    id: Date.now(),
+    playerId: player.id,
+    x: player.x,
+    y: player.y,
+    range: player.bombRange,
+    timer: 3000 // 3 seconds until explosion
+  };
+  
+  // Add to bombs list
+  store.setState({
+    bombs: [...bombs, newBomb]
+  });
+  
+  // Start bomb timer
+  setTimeout(() => {
+    explodeBomb(newBomb);
+  }, newBomb.timer);
+}
 
-// Initialize the router
-router.init();
+// Bomb explosion
+function explodeBomb(bomb) {
+  const { bombs, map } = store.getState();
+  const { grid } = map;
+  
+  // Remove this bomb from the bombs array
+  const updatedBombs = bombs.filter(b => b.id !== bomb.id);
+  
+  // Create explosions array
+  const explosions = [];
+  explosions.push({ x: bomb.x, y: bomb.y }); // Center
+  
+  // Check in all four directions
+  const directions = [
+    { dx: 0, dy: -1 }, // Up
+    { dx: 0, dy: 1 },  // Down
+    { dx: -1, dy: 0 }, // Left
+    { dx: 1, dy: 0 }   // Right
+  ];
+  
+  // Update state with explosions
+  store.setState({ bombs: updatedBombs });
+  
+  // For a full implementation, we would:
+  // 1. Check for blocks to destroy
+  // 2. Check for players hit
+  // 3. Animate explosions
+  // 4. Generate power-ups
+}
 
-// Check the initial route
-const path = window.location.hash;
-if (path === '#/active') {
-  setFilter('active');
-} else if (path === '#/completed') {
-  setFilter('completed');
-} else {
-  setFilter('all');
+// Game loop
+function gameLoop() {
+  // This will be used for animations and time-based updates
+  requestAnimationFrame(gameLoop);
+}
+
+// Initialize
+function init() {
+  // Subscribe to state changes
+  store.subscribe(render);
+  
+  // Setup keyboard controls
+  setupKeyboardControls();
+  
+  // Start game loop
+  requestAnimationFrame(gameLoop);
+  
+  // Initial render
+  render();
 }
 
 // Render function
 function render() {
-  app.mount(TodoApp());
+  app.mount(GameApp());
 }
 
-// Subscribe to state changes
-store.subscribe(render);
-
-// Initial render
-render();
+// Start the game
+init();

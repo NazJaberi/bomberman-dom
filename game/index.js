@@ -26,7 +26,8 @@ store.setState({
     }
   ], 
   bombs: [], 
-  powerups: [] 
+  powerups: [],
+  explosions: []
 });
 
 // Generate initial map
@@ -280,7 +281,8 @@ function placeBomb(player) {
     x: player.x,
     y: player.y,
     range: player.bombRange,
-    timer: 3000 // 3 seconds until explosion
+    timer: 3000, // 3 seconds until explosion
+    countdown: 3 // Visual countdown
   };
   
   // Add to bombs list
@@ -290,6 +292,9 @@ function placeBomb(player) {
   
   // Add bomb to the DOM
   addBombToDOM(newBomb);
+  
+  // Start bomb countdown animation
+  startBombCountdown(newBomb);
   
   // Start bomb timer
   setTimeout(() => {
@@ -307,8 +312,32 @@ function addBombToDOM(bomb) {
     bombElement.style.top = `${(bomb.y + 0.5) * CELL_SIZE}px`;
     bombElement.dataset.bombId = bomb.id;
     
+    // Add countdown text element
+    const countdownElement = document.createElement('div');
+    countdownElement.className = 'countdown';
+    countdownElement.textContent = bomb.countdown;
+    bombElement.appendChild(countdownElement);
+    
     container.appendChild(bombElement);
   }
+}
+
+// Start bomb countdown animation
+function startBombCountdown(bomb) {
+  let countdown = bomb.countdown;
+  const countdownInterval = setInterval(() => {
+    countdown--;
+    
+    // Update countdown display
+    const countdownElement = document.querySelector(`.bomb[data-bomb-id="${bomb.id}"] .countdown`);
+    if (countdownElement) {
+      countdownElement.textContent = countdown;
+    }
+    
+    if (countdown <= 0 || !document.querySelector(`.bomb[data-bomb-id="${bomb.id}"]`)) {
+      clearInterval(countdownInterval);
+    }
+  }, 1000);
 }
 
 // Remove bomb from DOM without re-rendering
@@ -321,28 +350,303 @@ function removeBombFromDOM(bombId) {
 
 // Bomb explosion
 function explodeBomb(bomb) {
-  const { bombs, map } = store.getState();
+  const { bombs, map, explosions, players } = store.getState();
   const { grid } = map;
   
   // Remove this bomb from the bombs array
   const updatedBombs = bombs.filter(b => b.id !== bomb.id);
   
-  // Update state with updated bombs
-  store.setState({ bombs: updatedBombs });
+  // Create explosions array
+  const newExplosions = [];
   
-  // Remove bomb from DOM
+  // Add center explosion
+  newExplosions.push({ x: bomb.x, y: bomb.y, type: 'center' });
+  
+  // Check in all four directions
+  const directions = [
+    { dx: 0, dy: -1, name: 'up' }, // Up
+    { dx: 0, dy: 1, name: 'down' },  // Down
+    { dx: -1, dy: 0, name: 'left' }, // Left
+    { dx: 1, dy: 0, name: 'right' }   // Right
+  ];
+  
+  // Process each direction
+  directions.forEach(dir => {
+    for (let i = 1; i <= bomb.range; i++) {
+      const newX = bomb.x + (dir.dx * i);
+      const newY = bomb.y + (dir.dy * i);
+      
+      // Check if position is within bounds
+      if (newX < 0 || newY < 0 || newX >= map.size || newY >= map.size) {
+        break; // Out of bounds, stop in this direction
+      }
+      
+      const cell = grid[newY][newX];
+      
+      if (cell.type === 'wall') {
+        break; // Can't go through walls
+      }
+      
+      // Add explosion at this position
+      const isEnd = i === bomb.range; // Is this the end of the explosion range?
+      const explosionType = isEnd ? `end-${dir.name}` : dir.name;
+      newExplosions.push({ x: newX, y: newY, type: explosionType });
+      
+      // Check if there's a block to destroy
+      if (cell.type === 'block') {
+        // Destroy the block
+        const updatedGrid = [...grid];
+        updatedGrid[newY][newX] = { ...cell, type: 'empty' };
+        
+        // Update the store with the new grid
+        store.setState({
+          map: {
+            ...map,
+            grid: updatedGrid
+          }
+        });
+        
+        // Update the cell visually
+        updateCellType(newX, newY, 'empty');
+        
+        // Potentially spawn a power-up (30% chance)
+        if (Math.random() < 0.3) {
+          spawnPowerUp(newX, newY);
+        }
+        
+        break; // Stop in this direction after hitting a block
+      }
+      
+      // Check if there's another bomb to chain-explode
+      const bombAtPosition = bombs.find(b => b.x === newX && b.y === newY && b.id !== bomb.id);
+      if (bombAtPosition) {
+        // Schedule this bomb to explode immediately
+        setTimeout(() => {
+          explodeBomb(bombAtPosition);
+        }, 100); // Slight delay for chain reaction effect
+        
+        break; // Stop in this direction after hitting another bomb
+      }
+    }
+  });
+  
+  // Add all new explosions
+  const allExplosions = [...explosions, ...newExplosions];
+  
+  // Remove this bomb from DOM
   removeBombFromDOM(bomb.id);
   
-  // For a full implementation, we would:
-  // 1. Check for blocks to destroy
-  // 2. Check for players hit
-  // 3. Animate explosions
-  // 4. Generate power-ups
+  // Add explosion effects to DOM
+  newExplosions.forEach(explosion => {
+    addExplosionToDOM(explosion);
+  });
+  
+  // Check for players hit by explosions
+  checkPlayersInExplosion(newExplosions);
+  
+  // Update the state
+  store.setState({ 
+    bombs: updatedBombs,
+    explosions: allExplosions
+  });
+  
+  // Clean up explosions after animation
+  setTimeout(() => {
+    removeExplosions(newExplosions);
+  }, 1000);
+}
+
+// Update cell type in the DOM
+function updateCellType(x, y, newType) {
+  const cellElement = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
+  if (cellElement) {
+    cellElement.className = `cell cell-${newType}`;
+  }
+}
+
+// Spawn a power-up at the given position
+function spawnPowerUp(x, y) {
+  const { powerups } = store.getState();
+  
+  // Determine which power-up to spawn
+  const powerUpTypes = ['bomb', 'flame', 'speed'];
+  const type = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
+  
+  const newPowerUp = { 
+    id: Date.now(), 
+    x, 
+    y, 
+    type 
+  };
+  
+  // Add to state
+  store.setState({
+    powerups: [...powerups, newPowerUp]
+  });
+  
+  // Add to DOM
+  addPowerUpToDOM(newPowerUp);
+}
+
+// Add power-up to DOM
+function addPowerUpToDOM(powerUp) {
+  const container = document.querySelector('.game-container');
+  if (container) {
+    const powerUpElement = document.createElement('div');
+    powerUpElement.className = `powerup powerup-${powerUp.type}`;
+    powerUpElement.style.left = `${(powerUp.x + 0.5) * CELL_SIZE}px`;
+    powerUpElement.style.top = `${(powerUp.y + 0.5) * CELL_SIZE}px`;
+    powerUpElement.dataset.powerupId = powerUp.id;
+    
+    container.appendChild(powerUpElement);
+  }
+}
+
+// Add explosion to DOM
+function addExplosionToDOM(explosion) {
+  const container = document.querySelector('.game-container');
+  if (container) {
+    const explosionElement = document.createElement('div');
+    explosionElement.className = `explosion explosion-${explosion.type}`;
+    explosionElement.style.left = `${explosion.x * CELL_SIZE}px`;
+    explosionElement.style.top = `${explosion.y * CELL_SIZE}px`;
+    explosionElement.dataset.x = explosion.x;
+    explosionElement.dataset.y = explosion.y;
+    
+    container.appendChild(explosionElement);
+  }
+}
+
+// Remove explosions from DOM and state
+function removeExplosions(explosionsToRemove) {
+  const { explosions } = store.getState();
+  
+  // Remove from DOM
+  explosionsToRemove.forEach(explosion => {
+    const explosionElements = document.querySelectorAll(`.explosion[data-x="${explosion.x}"][data-y="${explosion.y}"]`);
+    explosionElements.forEach(el => el.remove());
+  });
+  
+  // Remove from state
+  const updatedExplosions = explosions.filter(e => 
+    !explosionsToRemove.some(toRemove => 
+      toRemove.x === e.x && toRemove.y === e.y
+    )
+  );
+  
+  store.setState({ explosions: updatedExplosions });
+}
+
+// Check for players in explosion area
+function checkPlayersInExplosion(explosions) {
+  const { players } = store.getState();
+  
+  // Check if any player is hit by the explosions
+  let playersHit = false;
+  
+  const updatedPlayers = players.map(player => {
+    // Check if this player is in any explosion area
+    const isHit = explosions.some(explosion => 
+      explosion.x === player.x && explosion.y === player.y
+    );
+    
+    if (isHit) {
+      playersHit = true;
+      // Reduce player lives
+      return {
+        ...player,
+        lives: player.lives - 1
+      };
+    }
+    
+    return player;
+  });
+  
+  if (playersHit) {
+    // Apply damage to players
+    store.setState({ players: updatedPlayers });
+    
+    // Check for game over
+    if (updatedPlayers[0].lives <= 0) {
+      gameOver();
+    }
+  }
+}
+
+// Game over function
+function gameOver() {
+  store.setState({ gameState: 'gameOver' });
+  alert('Game Over! You lost all your lives.');
+  // In a full implementation, we'd show a game over screen
+  // and allow the player to restart
+}
+
+// Check for power-up collection
+function checkPowerUpCollection() {
+  const { players, powerups } = store.getState();
+  
+  players.forEach(player => {
+    // Find any power-up at the player's position
+    const powerUpIndex = powerups.findIndex(
+      powerUp => powerUp.x === player.x && powerUp.y === player.y
+    );
+    
+    if (powerUpIndex !== -1) {
+      const powerUp = powerups[powerUpIndex];
+      
+      // Apply power-up effect
+      applyPowerUp(player, powerUp);
+      
+      // Remove power-up from game
+      const updatedPowerUps = [...powerups];
+      updatedPowerUps.splice(powerUpIndex, 1);
+      
+      // Remove from DOM
+      const powerUpElement = document.querySelector(`.powerup[data-powerup-id="${powerUp.id}"]`);
+      if (powerUpElement) {
+        powerUpElement.remove();
+      }
+      
+      // Update state
+      store.setState({ powerups: updatedPowerUps });
+    }
+  });
+}
+
+// Apply power-up effect to player
+function applyPowerUp(player, powerUp) {
+  const { players } = store.getState();
+  let updatedPlayer = { ...player };
+  
+  switch (powerUp.type) {
+    case 'bomb':
+      // Increase bomb count
+      updatedPlayer.bombCount += 1;
+      break;
+    case 'flame':
+      // Increase explosion range
+      updatedPlayer.bombRange += 1;
+      break;
+    case 'speed':
+      // Increase speed
+      updatedPlayer.speed += 0.5;
+      break;
+  }
+  
+  // Update player in state
+  const updatedPlayers = players.map(p => 
+    p.id === player.id ? updatedPlayer : p
+  );
+  
+  store.setState({ players: updatedPlayers });
 }
 
 // Game loop
 function gameLoop() {
-  // This will be used for animations and time-based updates
+  // Check for power-up collections
+  checkPowerUpCollection();
+  
+  // Continue game loop
   requestAnimationFrame(gameLoop);
 }
 

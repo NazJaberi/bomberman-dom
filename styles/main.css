@@ -82,32 +82,99 @@
   
   .bomb {
     position: absolute;
-    width: calc(var(--cell-size) * 0.6);
-    height: calc(var(--cell-size) * 0.6);
+    width: calc(var(--cell-size) * 0.8);
+    height: calc(var(--cell-size) * 0.8);
     background-color: #000;
     border-radius: 50%;
     border: 2px solid #fff;
     z-index: 5;
     transform: translate(-50%, -50%);
-    animation: bomb-pulse 1s infinite;
+    animation: bomb-pulse 0.5s infinite alternate;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  
+  .countdown {
+    color: #fff;
+    font-weight: bold;
+    font-size: 14px;
   }
   
   @keyframes bomb-pulse {
-    0% { transform: scale(0.8); }
-    50% { transform: scale(1); }
-    100% { transform: scale(0.8); }
+    0% { transform: translate(-50%, -50%) scale(0.8); }
+    100% { transform: translate(-50%, -50%) scale(1); }
   }
   
   .explosion {
     position: absolute;
+    width: var(--cell-size);
+    height: var(--cell-size);
+    z-index: 6;
+    animation: explosion 1s forwards;
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  
+  .explosion-center {
     background-color: rgba(255, 165, 0, 0.8);
-    z-index: 5;
-    animation: explosion 0.5s forwards;
+    border-radius: 50%;
+  }
+  
+  .explosion-up, .explosion-down, .explosion-left, .explosion-right {
+    background-color: rgba(255, 165, 0, 0.8);
+  }
+  
+  .explosion-up {
+    clip-path: polygon(40% 0%, 60% 0%, 60% 100%, 40% 100%);
+  }
+  
+  .explosion-down {
+    clip-path: polygon(40% 0%, 60% 0%, 60% 100%, 40% 100%);
+  }
+  
+  .explosion-left {
+    clip-path: polygon(0% 40%, 0% 60%, 100% 60%, 100% 40%);
+  }
+  
+  .explosion-right {
+    clip-path: polygon(0% 40%, 0% 60%, 100% 60%, 100% 40%);
+  }
+  
+  .explosion-end-up {
+    background-color: rgba(255, 165, 0, 0.8);
+    clip-path: polygon(40% 0%, 60% 0%, 60% 50%, 40% 50%);
+  }
+  
+  .explosion-end-down {
+    background-color: rgba(255, 165, 0, 0.8);
+    clip-path: polygon(40% 50%, 60% 50%, 60% 100%, 40% 100%);
+  }
+  
+  .explosion-end-left {
+    background-color: rgba(255, 165, 0, 0.8);
+    clip-path: polygon(0% 40%, 0% 60%, 50% 60%, 50% 40%);
+  }
+  
+  .explosion-end-right {
+    background-color: rgba(255, 165, 0, 0.8);
+    clip-path: polygon(50% 40%, 50% 60%, 100% 60%, 100% 40%);
   }
   
   @keyframes explosion {
-    0% { opacity: 1; }
-    100% { opacity: 0; }
+    0% { 
+      opacity: 1; 
+      transform: scale(0.5);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.2);
+    }
+    100% { 
+      opacity: 0; 
+      transform: scale(1);
+    }
   }
   
   .powerup {
@@ -118,11 +185,47 @@
     z-index: 4;
     transform: translate(-50%, -50%);
     animation: powerup-float 1s infinite alternate;
+    background-color: white;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-weight: bold;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+  }
+  
+  .powerup-bomb {
+    background-color: #FF4081;
+    border: 2px solid #FF80AB;
+  }
+  
+  .powerup-bomb::after {
+    content: "+B";
+    color: white;
+  }
+  
+  .powerup-flame {
+    background-color: #FF9800;
+    border: 2px solid #FFB74D;
+  }
+  
+  .powerup-flame::after {
+    content: "+F";
+    color: white;
+  }
+  
+  .powerup-speed {
+    background-color: #2196F3;
+    border: 2px solid #64B5F6;
+  }
+  
+  .powerup-speed::after {
+    content: "+S";
+    color: white;
   }
   
   @keyframes powerup-float {
-    from { transform: translateY(0); }
-    to { transform: translateY(-5px); }
+    from { transform: translate(-50%, -50%) translateY(0); }
+    to { transform: translate(-50%, -50%) translateY(-5px); }
   }
 
 .player {

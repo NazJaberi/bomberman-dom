@@ -27,7 +27,7 @@ store.setState({
         speed: 1,
         bombCount: 1,
         bombRange: 1,
-        direction: 'front' // Default direction
+        direction: 'front' 
       }
     ],
     bombs: [],
@@ -127,12 +127,11 @@ function GameGrid() {
     // Create the grid cells
     const gridElement = createElement('div', { class: 'game-grid' },
       ...grid.flat().map(cell => {
-        // Create element with appropriate class and data attributes
         const cellElement = createElement('div', { 
           class: `cell cell-${cell.type}`,
           'data-x': cell.x,
           'data-y': cell.y,
-          'data-cell-type': cell.type // Add this to help with styling
+          'data-cell-type': cell.type 
         });
         
         return cellElement;
@@ -146,7 +145,7 @@ function GameGrid() {
     setTimeout(() => {
       const container = document.querySelector('.game-container');
       if (container) {
-        console.log('Game container found, adding players');
+        console.log('Game container found, updating cells and adding players');
         
         // Update cell background images after mounting
         document.querySelectorAll('.cell').forEach(cell => {
@@ -155,6 +154,8 @@ function GameGrid() {
             cell.style.backgroundImage = "url('./assets/wall.png')";
           } else if (cellType === 'block') {
             cell.style.backgroundImage = "url('./assets/block.png')";
+          } else if (cellType === 'empty') {
+            cell.style.backgroundImage = "url('./assets/floor.png')";
           }
         });
         
@@ -173,6 +174,7 @@ function GameGrid() {
     
     return gameContainer;
   }
+  
 
 function PlayerInfo() {
   const { players } = store.getState();
@@ -325,18 +327,22 @@ function isValidMove(x, y) {
   return true;
 }
 
-// Place a bomb
+// Completely rewritten bomb functions
 function placeBomb(player) {
   const { bombs } = store.getState();
   
+  console.log("Attempting to place bomb for player:", player);
+  
   // Check if player has bombs available
   if (bombs.filter(bomb => bomb.playerId === player.id).length >= player.bombCount) {
+    console.log("Player has reached bomb limit");
     return; // Can't place more bombs
   }
   
   // Check if there's already a bomb at this position
   if (bombs.some(bomb => bomb.x === player.x && bomb.y === player.y)) {
-    return; // Can't place bomb here
+    console.log("Bomb already exists at this position");
+    return; 
   }
   
   // Create a new bomb
@@ -346,18 +352,22 @@ function placeBomb(player) {
     x: player.x,
     y: player.y,
     range: player.bombRange,
-    timer: 3000, // 3 seconds until explosion
-    countdown: 3, // Visual countdown
-    stage: 1 // Animation stage (1, 2, 3)
+    timer: 3000, // 
+    countdown: 3, 
+    stage: 1 
   };
+  
+  console.log("Creating new bomb:", newBomb);
   
   // Add to bombs list
   store.setState({
     bombs: [...bombs, newBomb]
   });
   
-  // Add bomb to the DOM
-  addBombToDOM(newBomb);
+  console.log("Updated bombs state, now adding to DOM");
+  
+  // Create and add the bomb element directly
+  addBombElementToDOM(newBomb);
   
   // Start bomb countdown animation
   startBombCountdown(newBomb);
@@ -368,31 +378,59 @@ function placeBomb(player) {
   }, newBomb.timer);
 }
 
-// Add bomb to DOM without re-rendering
-function addBombToDOM(bomb) {
+function addBombElementToDOM(bomb) {
+  console.log("Adding bomb element to DOM:", bomb);
+  
+  // Create the bomb element
+  const bombElement = document.createElement('div');
+  bombElement.className = 'bomb';
+  bombElement.id = `bomb-${bomb.id}`;
+  bombElement.style.left = `${bomb.x * CELL_SIZE}px`;
+  bombElement.style.top = `${bomb.y * CELL_SIZE}px`;
+  bombElement.dataset.bombId = bomb.id;
+  bombElement.dataset.stage = bomb.stage;
+  
+  // Get absolute path to assets
+  const basePath = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+  const bombImagePath = `${basePath}assets/bomb${bomb.stage}.png`;
+  
+  console.log("Using bomb image path:", bombImagePath);
+  
+  // Set image explicitly with absolute path
+  bombElement.style.backgroundImage = `url('${bombImagePath}')`;
+  
+  // Add additional content as fallback
+  bombElement.textContent = "💣";
+  
+  setTimeout(() => {
     const container = document.querySelector('.game-container');
     if (container) {
-      const bombElement = document.createElement('div');
-      bombElement.className = 'bomb';
-      // Fix positioning: center the bomb in the cell
-      bombElement.style.left = `${bomb.x * CELL_SIZE}px`;
-      bombElement.style.top = `${bomb.y * CELL_SIZE}px`;
-      bombElement.dataset.bombId = bomb.id;
-      bombElement.dataset.stage = bomb.stage;
-      
-      // Use sprite image instead of CSS
-      const assetPath = `./assets/bomb${bomb.stage}.png`;
-      logAssetLoad('bomb', assetPath);
-      bombElement.style.backgroundImage = `url('${assetPath}')`;
-      
       container.appendChild(bombElement);
+      console.log("Bomb successfully added to DOM with ID:", bombElement.id);
+      
+      setTimeout(() => {
+        const addedBomb = document.getElementById(`bomb-${bomb.id}`);
+        if (addedBomb) {
+          console.log("Bomb element styles:", {
+            backgroundImage: addedBomb.style.backgroundImage,
+            width: addedBomb.offsetWidth,
+            height: addedBomb.offsetHeight,
+            left: addedBomb.style.left,
+            top: addedBomb.style.top
+          });
+        }
+      }, 50);
+    } else {
+      console.error("Game container not found when trying to add bomb!");
     }
-  }
+  }, 50);
+}
 
-// Start bomb countdown animation
 function startBombCountdown(bomb) {
   let countdown = bomb.countdown;
   let stage = 1;
+  
+  console.log("Starting bomb countdown for bomb ID:", bomb.id);
   
   const countdownInterval = setInterval(() => {
     countdown--;
@@ -400,31 +438,37 @@ function startBombCountdown(bomb) {
     // Update animation stage (cycles through 1-2-3)
     stage = stage % 3 + 1;
     
-    // Update bomb sprite
-    const bombElement = document.querySelector(`.bomb[data-bomb-id="${bomb.id}"]`);
+    // Use ID-based selector for more reliable selection
+    const bombElement = document.getElementById(`bomb-${bomb.id}`);
+    
     if (bombElement) {
+      console.log(`Updating bomb ${bomb.id} to stage ${stage}`);
       bombElement.dataset.stage = stage;
-      const assetPath = `./assets/bomb${stage}.png`;
-      logAssetLoad('bomb update', assetPath);
-      bombElement.style.backgroundImage = `url('${assetPath}')`;
+      
+      // Get absolute path
+      const basePath = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+      const bombImagePath = `${basePath}assets/bomb${stage}.png`;
+      
+      // Update background image
+      bombElement.style.backgroundImage = `url('${bombImagePath}')`;
+      
+      // Add text representation of countdown
+      bombElement.textContent = `💣${countdown}`;
+    } else {
+      console.warn(`Bomb element with ID bomb-${bomb.id} not found during countdown update`);
     }
     
-    if (countdown <= 0 || !document.querySelector(`.bomb[data-bomb-id="${bomb.id}"]`)) {
+    if (countdown <= 0 || !document.getElementById(`bomb-${bomb.id}`)) {
+      console.log(`Countdown finished for bomb ${bomb.id}`);
       clearInterval(countdownInterval);
     }
   }, 1000);
 }
 
-// Remove bomb from DOM without re-rendering
-function removeBombFromDOM(bombId) {
-  const bombElement = document.querySelector(`.bomb[data-bomb-id="${bombId}"]`);
-  if (bombElement) {
-    bombElement.remove();
-  }
-}
-
-// Bomb explosion
+// Explosion logic
 function explodeBomb(bomb) {
+  console.log("Exploding bomb:", bomb.id);
+  
   const { bombs, map, explosions, players } = store.getState();
   const { grid } = map;
   
@@ -510,7 +554,13 @@ function explodeBomb(bomb) {
   const allExplosions = [...explosions, ...newExplosions];
   
   // Remove this bomb from DOM
-  removeBombFromDOM(bomb.id);
+  const bombElement = document.getElementById(`bomb-${bomb.id}`);
+  if (bombElement) {
+    bombElement.remove();
+    console.log("Removed bomb element from DOM");
+  } else {
+    console.warn(`Bomb element with ID bomb-${bomb.id} not found when trying to remove`);
+  }
   
   // Add explosion effects to DOM
   newExplosions.forEach(explosion => {
@@ -541,24 +591,24 @@ function explodeBomb(bomb) {
 
 // Update cell type in the DOM
 function updateCellType(x, y, newType) {
-  const cellElement = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
-  if (cellElement) {
-    cellElement.className = `cell cell-${newType}`;
-    
-    // Update background image
-    if (newType === 'wall') {
-      const assetPath = './assets/wall.png';
-      logAssetLoad('wall update', assetPath);
-      cellElement.style.backgroundImage = `url('${assetPath}')`;
-    } else if (newType === 'block') {
-      const assetPath = './assets/block.png';
-      logAssetLoad('block update', assetPath);
-      cellElement.style.backgroundImage = `url('${assetPath}')`;
-    } else {
-      cellElement.style.backgroundImage = "";
+    const cellElement = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
+    if (cellElement) {
+      // Update the class and data attribute
+      cellElement.className = `cell cell-${newType}`;
+      cellElement.dataset.cellType = newType;
+      
+      // Update image based on new type
+      if (newType === 'wall') {
+        cellElement.style.backgroundImage = "url('./assets/wall.png')";
+      } else if (newType === 'block') {
+        cellElement.style.backgroundImage = "url('./assets/block.png')";
+      } else if (newType === 'empty') {
+        cellElement.style.backgroundImage = "url('./assets/floor.png')";
+      } else {
+        cellElement.style.backgroundImage = "";
+      }
     }
   }
-}
 
 // Spawn a power-up at the given position
 function spawnPowerUp(x, y) {
@@ -580,22 +630,44 @@ function spawnPowerUp(x, y) {
     powerups: [...powerups, newPowerUp]
   });
   
-  // Add to DOM
   addPowerUpToDOM(newPowerUp);
 }
 
 function addPowerUpToDOM(powerUp) {
-    const container = document.querySelector('.game-container');
-    if (container) {
+    setTimeout(() => {
+      const container = document.querySelector('.game-container');
+      if (!container) {
+        console.error('Game container not found when adding power-up!');
+        return;
+      }
+      
       const powerUpElement = document.createElement('div');
       powerUpElement.className = `powerup powerup-${powerUp.type}`;
+      
       // Center the power-up in the cell
       powerUpElement.style.left = `${powerUp.x * CELL_SIZE + CELL_SIZE/2}px`;
       powerUpElement.style.top = `${powerUp.y * CELL_SIZE + CELL_SIZE/2}px`;
       powerUpElement.dataset.powerupId = powerUp.id;
       
+      let powerupImageUrl = '';
+      switch (powerUp.type) {
+        case 'bomb':
+          powerupImageUrl = './assets/pubomb.png';
+          break;
+        case 'flame':
+          powerupImageUrl = './assets/pubigbomb.png';
+          break;
+        case 'speed':
+          powerupImageUrl = './assets/puspeed.png';
+          break;
+      }
+      
+      console.log("Setting power-up image:", powerupImageUrl);
+      powerUpElement.style.backgroundImage = `url('${powerupImageUrl}')`;
+      
       container.appendChild(powerUpElement);
-    }
+      console.log("Power-up added to DOM:", powerUp.type);
+    }, 0);
   }
 
 // Add explosion to DOM
@@ -739,27 +811,30 @@ function applyPowerUp(player, powerUp) {
 
 // Check assets
 function checkAssets() {
-  const assetPaths = [
-    './assets/front.png',
-    './assets/back.png',
-    './assets/left.png',
-    './assets/right.png',
-    './assets/wall.png',
-    './assets/block.png',
-    './assets/bomb1.png',
-    './assets/bomb2.png',
-    './assets/bomb3.png'
-  ];
-  
-  console.log('Checking asset availability...');
-  assetPaths.forEach(path => {
-    const img = new Image();
-    img.onload = () => console.log(`✅ Asset loaded: ${path}`);
-    img.onerror = () => console.error(`❌ Asset failed to load: ${path}`);
-    img.src = path;
-  });
-}
-
+    const assetPaths = [
+      './assets/front.png',
+      './assets/back.png',
+      './assets/left.png',
+      './assets/right.png',
+      './assets/wall.png',
+      './assets/block.png',
+      './assets/floor.png',
+      './assets/bomb1.png',
+      './assets/bomb2.png',
+      './assets/bomb3.png',
+      './assets/pubomb.png',
+      './assets/pubigbomb.png',
+      './assets/puspeed.png'
+    ];
+    
+    console.log('Checking asset availability...');
+    assetPaths.forEach(path => {
+      const img = new Image();
+      img.onload = () => console.log(`✅ Asset loaded: ${path}`);
+      img.onerror = () => console.error(`❌ Asset failed to load: ${path}`);
+      img.src = path;
+    });
+  }
 // Game loop
 function gameLoop() {
   // Check for power-up collections

@@ -1,4 +1,3 @@
-// src/core/router.js
 import { store } from './state.js';
 
 export class Router {

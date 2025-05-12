@@ -1,8 +1,48 @@
 import { createApp, createElement, store } from '../src/index.js';
+import { NicknameForm } from './components/NicknameForm.js';
+import { Lobby }        from './components/Lobby.js';
 
+store.setState({
+  gameState : 'init',   // init | lobby | playing | gameOver
+  nickname  : null,
+  lobby     : { players: [] },
+  socket    : null
+});
+
+/* ---------- connect to our raw WebSocket server ------------------------ */
+function connectWS() {
+  const ws = new WebSocket('ws://localhost:8080');
+
+  ws.addEventListener('open', () => console.log('🔌 WS connected'));
+  ws.addEventListener('message', evt => {
+    const { type, payload } = JSON.parse(evt.data);
+    if (type === 'lobbyUpdate')
+      store.setState({ lobby: { players: payload }});
+  });
+  ws.addEventListener('close', () => {
+    console.warn('WS closed – retrying in 3 s');
+    setTimeout(connectWS, 3000);
+  });
+
+  store.setState({ socket: ws });
+}
+connectWS();
+
+/* ---------- root component --------------------------------------------- */
+function Root() {
+  const { gameState } = store.getState();
+
+  if (gameState === 'init')    return NicknameForm();
+  if (gameState === 'lobby')   return Lobby();
+  if (gameState === 'playing') return GameApp();   // your existing game
+  if (gameState === 'gameOver')return createElement('h1', {}, 'Game Over');
+}
+
+/* ---------- mount via mini-framework ----------------------------------- */
 const app = createApp('#app');
+store.subscribe(() => app.mount(Root));
+app.mount(Root);
 
-// Cell size from CSS
 const CELL_SIZE = 40;
 const GRID_SIZE = 15;
 
@@ -205,6 +245,17 @@ function PlayerInfo() {
 function GameApp() {
   const { gameState, map } = store.getState();
   
+  // Show login screen
+  if (gameState === 'login') {
+    return LoginScreen();
+  }
+  
+  // Show waiting room
+  if (gameState === 'waiting') {
+    return WaitingRoom();
+  }
+  
+  // Game is playing - make sure map is generated
   if (!map.grid.length) {
     console.log("Generating map...");
     generateMap();
@@ -214,80 +265,94 @@ function GameApp() {
   console.log("Rendering GameApp");
   return createElement('div', { class: 'game-app' },
     GameTitle(),
-    PlayerInfo(),
+    MultiPlayerInfo(), 
+    GameChat(),
     GameGrid()
   );
 }
-
 // Movement handling with delay to prevent janky movement
 let isMoving = false;
 const moveDelay = 150; // ms between moves
 
 // Update the handleKeyDown function to change player direction
 function handleKeyDown(e) {
-    if (isMoving) return;
-    
-    const { players } = store.getState();
-    const player = players[0]; // First player
-    
-    let newX = player.x;
-    let newY = player.y;
-    let newDirection = player.direction;
-    
-    switch (e.key) {
-      case 'ArrowUp':
-        newY -= player.speed;
-        newDirection = 'back';
-        break;
-      case 'ArrowDown':
-        newY += player.speed;
-        newDirection = 'front';
-        break;
-      case 'ArrowLeft':
-        newX -= player.speed;
-        newDirection = 'left';
-        break;
-      case 'ArrowRight':
-        newX += player.speed;
-        newDirection = 'right';
-        break;
-      case ' ': // Space bar to place bombs
-        placeBomb(player);
-        return;
-      default:
-        return; // Don't handle other keys
-    }
-    
-    // Update direction even if we can't move
-    if (newDirection !== player.direction) {
-      store.setState({
-        players: players.map(p => 
-          p.id === player.id ? { ...p, direction: newDirection } : p
-        )
-      });
-      
-      // Update player sprite without full re-render
-      updatePlayerSprite(player.id, newDirection);
-    }
-    
-    // Simple collision detection for movement
-    if (isValidMove(newX, newY)) {
-      isMoving = true;
-      
-      store.setState({
-        players: players.map(p => 
-          p.id === player.id ? { ...p, x: newX, y: newY, direction: newDirection } : p
-        )
-      });
-      
-      updatePlayerPosition(player.id, newX, newY);
-      
-      // Reset moving flag after delay
-      setTimeout(() => {
-        isMoving = false;
-      }, moveDelay);
-    }
+  if (isMoving || store.getState().gameState !== 'playing') return;
+  
+  const { players, localPlayerId } = store.getState();
+  if (!localPlayerId || !players || !players[localPlayerId]) return;
+  
+  const player = players[localPlayerId];
+  
+  let newX = player.x;
+  let newY = player.y;
+  let newDirection = player.direction;
+  
+  switch (e.key) {
+    case 'ArrowUp':
+      newY -= player.speed;
+      newDirection = 'back';
+      break;
+    case 'ArrowDown':
+      newY += player.speed;
+      newDirection = 'front';
+      break;
+    case 'ArrowLeft':
+      newX -= player.speed;
+      newDirection = 'left';
+      break;
+    case 'ArrowRight':
+      newX += player.speed;
+      newDirection = 'right';
+      break;
+    case ' ': // Space bar to place bombs
+      placeBomb(player);
+      return;
+    default:
+      return; // Don't handle other keys
   }
+  
+  // Update direction even if we can't move
+  if (newDirection !== player.direction) {
+    const updatedPlayers = { ...players };
+    updatedPlayers[localPlayerId] = {
+      ...player,
+      direction: newDirection
+    };
+    
+    store.setState({ players: updatedPlayers });
+    
+    // Update player sprite without full re-render
+    updatePlayerSprite(player.id, newDirection);
+    
+    // Send direction update to server
+    sendPlayerMove(player.x, player.y, newDirection);
+  }
+  
+  // Simple collision detection for movement
+  if (isValidMove(newX, newY)) {
+    isMoving = true;
+    
+    const updatedPlayers = { ...players };
+    updatedPlayers[localPlayerId] = {
+      ...player,
+      x: newX,
+      y: newY,
+      direction: newDirection
+    };
+    
+    store.setState({ players: updatedPlayers });
+    
+    updatePlayerPosition(player.id, newX, newY);
+    
+    // Send movement to server
+    sendPlayerMove(newX, newY, newDirection);
+    
+    // Reset moving flag after delay
+    setTimeout(() => {
+      isMoving = false;
+    }, moveDelay);
+  }
+}
   
   function updatePlayerSprite(playerId, direction) {
     const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
@@ -341,7 +406,6 @@ function isValidMove(x, y) {
   return true;
 }
 
-// Completely rewritten bomb functions
 function placeBomb(player) {
   const { bombs } = store.getState();
   
@@ -350,7 +414,7 @@ function placeBomb(player) {
   // Check if player has bombs available
   if (bombs.filter(bomb => bomb.playerId === player.id).length >= player.bombCount) {
     console.log("Player has reached bomb limit");
-    return; // Can't place more bombs
+    return; 
   }
   
   // Check if there's already a bomb at this position
@@ -366,19 +430,20 @@ function placeBomb(player) {
     x: player.x,
     y: player.y,
     range: player.bombRange,
-    timer: 3000, // 
-    countdown: 3, 
-    stage: 1 
+    timer: 3000,
+    countdown: 3,
+    stage: 1
   };
   
   console.log("Creating new bomb:", newBomb);
   
-  // Add to bombs list
+  // Add to bombs list locally
   store.setState({
     bombs: [...bombs, newBomb]
   });
   
-  console.log("Updated bombs state, now adding to DOM");
+  // Send to server
+  sendBombPlaced(newBomb);
   
   // Create and add the bomb element directly
   addBombElementToDOM(newBomb);
@@ -391,6 +456,7 @@ function placeBomb(player) {
     explodeBomb(newBomb);
   }, newBomb.timer);
 }
+
 
 function addBombElementToDOM(bomb) {
   console.log("Adding bomb element to DOM:", bomb);
@@ -737,39 +803,62 @@ function removeExplosions(explosionsToRemove) {
 
 // Check for players in explosion area
 function checkPlayersInExplosion(explosions) {
-  const { players } = store.getState();
+  const { players, localPlayerId } = store.getState();
+  if (!players) return;
   
   // Check if any player is hit by the explosions
   let playersHit = false;
   
-  const updatedPlayers = players.map(player => {
+  const updatedPlayers = { ...players };
+  
+  Object.keys(players).forEach(playerId => {
+    const player = players[playerId];
+    
     // Check if this player is in any explosion area
     const isHit = explosions.some(explosion => 
-      explosion.x === player.x && explosion.y === player.y
+      Math.floor(player.x) === explosion.x && Math.floor(player.y) === explosion.y
     );
     
     if (isHit) {
       playersHit = true;
       // Reduce player lives
-      return {
+      updatedPlayers[playerId] = {
         ...player,
         lives: player.lives - 1
       };
+      
+      // If local player was hit
+      if (playerId === localPlayerId) {
+        // Send updated life count to server
+        sendPlayerHit(updatedPlayers[playerId].lives);
+      }
+      
+      // If player is completely dead, remove them
+      if (updatedPlayers[playerId].lives <= 0) {
+        // Remove player from DOM
+        const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
+        if (playerElement) {
+          playerElement.remove();
+        }
+        
+        // If it's the local player, show game over
+        if (playerId === localPlayerId) {
+          alert('You were killed!');
+        }
+        
+        // Remove from local state
+        delete updatedPlayers[playerId];
+      }
     }
-    
-    return player;
   });
   
   if (playersHit) {
     // Apply damage to players
     store.setState({ players: updatedPlayers });
-    
-    // Check for game over
-    if (updatedPlayers[0].lives <= 0) {
-      gameOver();
-    }
   }
 }
+
+
 
 // Game over function
 function gameOver() {
@@ -877,6 +966,9 @@ function gameLoop() {
 // Initialize
 function init() {
   console.log("Starting game initialization...");
+  
+  // Initialize multiplayer functionality
+  initializeMultiplayer();
   
   // Check assets
   checkAssets();

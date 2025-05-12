@@ -119,61 +119,75 @@ function GameTitle() {
 }
 
 function GameGrid() {
-    const { map } = store.getState();
-    const { grid } = map;
-    
-    console.log("Creating game grid with cells:", grid.length * grid[0].length);
-    
-    // Create the grid cells
-    const gridElement = createElement('div', { class: 'game-grid' },
-      ...grid.flat().map(cell => {
-        const cellElement = createElement('div', { 
-          class: `cell cell-${cell.type}`,
-          'data-x': cell.x,
-          'data-y': cell.y,
-          'data-cell-type': cell.type 
-        });
-        
-        return cellElement;
-      })
-    );
-    
-    // Create the game container
-    const gameContainer = createElement('div', { class: 'game-container' }, gridElement);
-    
-    // After the component is mounted, add the player elements and update cell images
-    setTimeout(() => {
-      const container = document.querySelector('.game-container');
-      if (container) {
-        console.log('Game container found, updating cells and adding players');
-        
-        // Update cell background images after mounting
-        document.querySelectorAll('.cell').forEach(cell => {
-          const cellType = cell.dataset.cellType;
-          if (cellType === 'wall') {
-            cell.style.backgroundImage = "url('./assets/wall.png')";
-          } else if (cellType === 'block') {
-            cell.style.backgroundImage = "url('./assets/block.png')";
-          } else if (cellType === 'empty') {
-            cell.style.backgroundImage = "url('./assets/floor.png')";
-          }
-        });
-        
-        // Remove any existing players
-        const existingPlayers = container.querySelectorAll('.player');
-        existingPlayers.forEach(p => p.remove());
-        
-        // Add new player elements
-        renderPlayers().forEach(player => {
-          container.appendChild(player);
-        });
-      } else {
-        console.error('Game container not found!');
-      }
-    }, 0);
-    
-    return gameContainer;
-  }
+  const { map, bombs, powerups, explosions } = store.getState();
+  const { grid } = map;
+  
+  console.log("Creating game grid with cells:", grid.length * grid[0].length);
+  
+  // Create the grid cells
+  const gridElement = createElement('div', { class: 'game-grid' },
+    ...grid.flat().map(cell => {
+      const cellElement = createElement('div', { 
+        class: `cell cell-${cell.type}`,
+        'data-x': cell.x,
+        'data-y': cell.y,
+        'data-cell-type': cell.type 
+      });
+      
+      return cellElement;
+    })
+  );
+  
+  // Create the game container
+  const gameContainer = createElement('div', { class: 'game-container' }, gridElement);
+  
+  // After the component is mounted, add the player and dynamic elements
+  setTimeout(() => {
+    const container = document.querySelector('.game-container');
+    if (container) {
+      console.log('Game container found, updating cells and adding entities');
+      
+      // Update cell background images after mounting
+      document.querySelectorAll('.cell').forEach(cell => {
+        const cellType = cell.dataset.cellType;
+        if (cellType === 'wall') {
+          cell.style.backgroundImage = "url('./assets/wall.png')";
+        } else if (cellType === 'block') {
+          cell.style.backgroundImage = "url('./assets/block.png')";
+        } else if (cellType === 'empty') {
+          cell.style.backgroundImage = "url('./assets/floor.png')";
+        }
+      });
+      
+      // Remove existing dynamic elements to avoid duplicates
+      container.querySelectorAll('.player, .bomb, .powerup, .explosion').forEach(el => el.remove());
+      
+      // Add players
+      renderPlayers().forEach(player => {
+        container.appendChild(player);
+      });
+      
+      // Add bombs
+      bombs.forEach(bomb => {
+        addBombElementToDOM(bomb);
+      });
+      
+      // Add power-ups
+      powerups.forEach(powerup => {
+        addPowerUpToDOM(powerup);
+      });
+      
+      // Add explosions
+      explosions.forEach(explosion => {
+        addExplosionToDOM(explosion);
+      });
+    } else {
+      console.error('Game container not found!');
+    }
+  }, 0);
+  
+  return gameContainer;
+}
   
 
 function PlayerInfo() {
@@ -381,6 +395,19 @@ function placeBomb(player) {
 function addBombElementToDOM(bomb) {
   console.log("Adding bomb element to DOM:", bomb);
   
+  const container = document.querySelector('.game-container');
+  if (!container) {
+    console.error("Game container not found when trying to add bomb!");
+    return;
+  }
+  
+  // Check if bomb element already exists to avoid duplicates
+  const existingBomb = document.getElementById(`bomb-${bomb.id}`);
+  if (existingBomb) {
+    console.log(`Bomb ${bomb.id} already exists in DOM, skipping addition`);
+    return;
+  }
+  
   // Create the bomb element
   const bombElement = document.createElement('div');
   bombElement.className = 'bomb';
@@ -390,38 +417,30 @@ function addBombElementToDOM(bomb) {
   bombElement.dataset.bombId = bomb.id;
   bombElement.dataset.stage = bomb.stage;
   
-  // Get absolute path to assets
-  const basePath = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
-  const bombImagePath = `${basePath}assets/bomb${bomb.stage}.png`;
+  // Fix the path to use relative path consistently
+  const bombImagePath = `./assets/bomb${bomb.stage}.png`;
   
   console.log("Using bomb image path:", bombImagePath);
   
-  // Set image explicitly with absolute path
+  // Set image explicitly with relative path
   bombElement.style.backgroundImage = `url('${bombImagePath}')`;
   
   // Add additional content as fallback
   bombElement.textContent = "💣";
   
+  container.appendChild(bombElement);
+  console.log("Bomb successfully added to DOM with ID:", bombElement.id);
+  
   setTimeout(() => {
-    const container = document.querySelector('.game-container');
-    if (container) {
-      container.appendChild(bombElement);
-      console.log("Bomb successfully added to DOM with ID:", bombElement.id);
-      
-      setTimeout(() => {
-        const addedBomb = document.getElementById(`bomb-${bomb.id}`);
-        if (addedBomb) {
-          console.log("Bomb element styles:", {
-            backgroundImage: addedBomb.style.backgroundImage,
-            width: addedBomb.offsetWidth,
-            height: addedBomb.offsetHeight,
-            left: addedBomb.style.left,
-            top: addedBomb.style.top
-          });
-        }
-      }, 50);
-    } else {
-      console.error("Game container not found when trying to add bomb!");
+    const addedBomb = document.getElementById(`bomb-${bomb.id}`);
+    if (addedBomb) {
+      console.log("Bomb element styles:", {
+        backgroundImage: addedBomb.style.backgroundImage,
+        width: addedBomb.offsetWidth,
+        height: addedBomb.offsetHeight,
+        left: addedBomb.style.left,
+        top: addedBomb.style.top
+      });
     }
   }, 50);
 }
@@ -445,9 +464,8 @@ function startBombCountdown(bomb) {
       console.log(`Updating bomb ${bomb.id} to stage ${stage}`);
       bombElement.dataset.stage = stage;
       
-      // Get absolute path
-      const basePath = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
-      const bombImagePath = `${basePath}assets/bomb${stage}.png`;
+      // Use relative path for bomb images
+      const bombImagePath = `./assets/bomb${stage}.png`;
       
       // Update background image
       bombElement.style.backgroundImage = `url('${bombImagePath}')`;
@@ -634,46 +652,58 @@ function spawnPowerUp(x, y) {
 }
 
 function addPowerUpToDOM(powerUp) {
-    setTimeout(() => {
-      const container = document.querySelector('.game-container');
-      if (!container) {
-        console.error('Game container not found when adding power-up!');
-        return;
-      }
-      
-      const powerUpElement = document.createElement('div');
-      powerUpElement.className = `powerup powerup-${powerUp.type}`;
-      
-      // Center the power-up in the cell
-      powerUpElement.style.left = `${powerUp.x * CELL_SIZE + CELL_SIZE/2}px`;
-      powerUpElement.style.top = `${powerUp.y * CELL_SIZE + CELL_SIZE/2}px`;
-      powerUpElement.dataset.powerupId = powerUp.id;
-      
-      let powerupImageUrl = '';
-      switch (powerUp.type) {
-        case 'bomb':
-          powerupImageUrl = './assets/pubomb.png';
-          break;
-        case 'flame':
-          powerupImageUrl = './assets/pubigbomb.png';
-          break;
-        case 'speed':
-          powerupImageUrl = './assets/puspeed.png';
-          break;
-      }
-      
-      console.log("Setting power-up image:", powerupImageUrl);
-      powerUpElement.style.backgroundImage = `url('${powerupImageUrl}')`;
-      
-      container.appendChild(powerUpElement);
-      console.log("Power-up added to DOM:", powerUp.type);
-    }, 0);
+  const container = document.querySelector('.game-container');
+  if (!container) {
+    console.error('Game container not found when adding power-up!');
+    return;
   }
+  
+  // Check if power-up already exists
+  const existingPowerUp = document.querySelector(`.powerup[data-powerup-id="${powerUp.id}"]`);
+  if (existingPowerUp) {
+    console.log(`Power-up ${powerUp.id} already exists in DOM, skipping addition`);
+    return;
+  }
+  
+  const powerUpElement = document.createElement('div');
+  powerUpElement.className = `powerup powerup-${powerUp.type}`;
+  
+  // Center the power-up in the cell
+  powerUpElement.style.left = `${powerUp.x * CELL_SIZE + CELL_SIZE/2}px`;
+  powerUpElement.style.top = `${powerUp.y * CELL_SIZE + CELL_SIZE/2}px`;
+  powerUpElement.dataset.powerupId = powerUp.id;
+  
+  let powerupImageUrl = '';
+  switch (powerUp.type) {
+    case 'bomb':
+      powerupImageUrl = './assets/pubomb.png';
+      break;
+    case 'flame':
+      powerupImageUrl = './assets/pubigbomb.png';
+      break;
+    case 'speed':
+      powerupImageUrl = './assets/puspeed.png';
+      break;
+  }
+  
+  console.log("Setting power-up image:", powerupImageUrl);
+  powerUpElement.style.backgroundImage = `url('${powerupImageUrl}')`;
+  
+  container.appendChild(powerUpElement);
+  console.log("Power-up added to DOM:", powerUp.type);
+}
 
 // Add explosion to DOM
 function addExplosionToDOM(explosion) {
   const container = document.querySelector('.game-container');
   if (container) {
+    // Check if explosion already exists at this position
+    const existingExplosion = container.querySelector(`.explosion[data-x="${explosion.x}"][data-y="${explosion.y}"]`);
+    if (existingExplosion) {
+      console.log(`Explosion at (${explosion.x}, ${explosion.y}) already exists, skipping`);
+      return;
+    }
+    
     const explosionElement = document.createElement('div');
     explosionElement.className = `explosion explosion-${explosion.type}`;
     explosionElement.style.left = `${explosion.x * CELL_SIZE}px`;

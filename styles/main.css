@@ -139,16 +139,17 @@ body {
 }
 
 .bomb[data-stage="1"] {
-  background-image: url('assets/bomb1.png') !important;
+  background-image: url('./assets/bomb1.png') ;
 }
 
 .bomb[data-stage="2"] {
-  background-image: url('assets/bomb2.png') !important;
+  background-image: url('./assets/bomb2.png') ;
 }
 
 .bomb[data-stage="3"] {
-  background-image: url('assets/bomb3.png') !important;
+  background-image: url('./assets/bomb3.png') ;
 }
+
 
 .explosion {
   position: absolute;

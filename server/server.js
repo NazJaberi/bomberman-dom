@@ -3,156 +3,145 @@ import crypto from 'crypto';
 
 const PORT = 8080;
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const MAP_SIZE = 15;
 
-const clients = new Map();          // socket -> { id, nick }
+const sockets = new Map();                // socket -> { id, nick }
+const players = new Map();                // id     -> { x,y,dir,lives }
 let nextId = 1;
 
-let phase = 'waiting';             // waiting | fill | ready | playing
-let fillRemaining  = 0;
-let readyRemaining = 0;
-let fillInterval   = null;
-let readyInterval  = null;
+/* lobby timers (unchanged from milestone 2)  */
+let phase = 'waiting'; // waiting | fill | ready | playing
+let fillR = 0, readyR = 0, fillI = null, readyI = null;
 
-function encodeFrame(str) {
-  const msg = Buffer.from(str);
-  const len = msg.length;
-  if (len < 126)  return Buffer.concat([Buffer.from([0x81, len]), msg]);
-  if (len < 65536)
-    return Buffer.concat([
-      Buffer.from([0x81, 126, len >> 8, len & 255]), msg
-    ]);
-  throw new Error('Frame too large');
-}
-function broadcast(type, payload) {
-  const frame = encodeFrame(JSON.stringify({ type, payload }));
-  for (const sock of clients.keys()) sock.write(frame);
-}
-function updateLobby() {
-  broadcast('lobbyUpdate', [...clients.values()]);
-}
-function sendPhase() {
-  broadcast('lobbyState', { phase, fillRemaining, readyRemaining });
-}
+/* current game  */
+let mapSeed = null;                       // number | null
 
-/* timer logic ------------- */
-function startFillTimer() {
-  phase = 'fill'; fillRemaining = 20; sendPhase();
-  fillInterval = setInterval(() => {
-    fillRemaining--;
-    if (fillRemaining <= 0 || clients.size >= 4) {
-      clearInterval(fillInterval); fillInterval = null;
-      startReadyTimer();
-    }
-    sendPhase();
-  }, 1000);
+/* helpers  */
+const enc = s => {
+  const b = Buffer.from(s);
+  return b.length < 126
+    ? Buffer.concat([Buffer.from([0x81, b.length]), b])
+    : Buffer.concat([Buffer.from([0x81,126,b.length>>8,b.length&255]), b]);
+};
+const sendAll = (type,payload)=> {
+  const f = enc(JSON.stringify({type,payload}));
+  for(const s of sockets.keys()) s.write(f);
+};
+const lobbyUpdate = () =>
+  sendAll('lobbyUpdate',[...sockets.values()]);
+
+const lobbyState  = ()=> sendAll('lobbyState',{phase,fillR,readyR});
+
+/* deterministic map helper  */
+function rng(seed){
+  let s = seed >>> 0;
+  return ()=> (s = (s*1664525+1013904223)>>>0) / 2**32;
+}
+function generateSpawnPos(id){
+  const last = MAP_SIZE-2;
+  return [
+    {x:1 , y:1 },           // id 1  top-left
+    {x:1 , y:last},         // id 2  bottom-left
+    {x:last, y:1 },         // id 3  top-right
+    {x:last, y:last}        // id 4  bottom-right
+  ][(id-1)%4];
 }
 
-function startReadyTimer() {
-  phase = 'ready'; readyRemaining = 10; sendPhase();
-  readyInterval = setInterval(() => {
-    readyRemaining--;
-    if (readyRemaining <= 0) {
-      clearInterval(readyInterval); readyInterval = null;
-      beginGame();
-      return;
-    }
-    /* if players drop below 2, abort */
-    if (clients.size < 2) {
-      clearInterval(readyInterval); readyInterval = null;
-      phase = 'waiting'; sendPhase();
-      return;
-    }
-    sendPhase();
-  }, 1000);
+function startFill(){
+  phase='fill'; fillR=20; lobbyState();
+  fillI=setInterval(()=>{
+    fillR--;
+    if(fillR<=0||sockets.size>=4){ clearInterval(fillI); startReady(); }
+    lobbyState();
+  },1000);
+}
+function startReady(){
+  phase='ready'; readyR=10; lobbyState();
+  readyI=setInterval(()=>{
+    readyR--;
+    if(sockets.size<2){clearInterval(readyI);phase='waiting';lobbyState();return;}
+    if(readyR<=0){ clearInterval(readyI); beginGame(); return;}
+    lobbyState();
+  },1000);
+}
+function beginGame(){
+  phase='playing';
+  mapSeed = Date.now() & 0xffffffff;
+  players.clear();
+  for(const {id} of sockets.values()){
+    const p = generateSpawnPos(id);
+    players.set(id,{...p,dir:'front',lives:3});
+  }
+  sendAll('gameStart',{seed:mapSeed,players:[...players.entries()]});
+  lobbyState();
 }
 
-function beginGame() {
-  phase = 'playing'; sendPhase();
-  broadcast('gameStart', null);
-}
-
-/* clean up if players leave  */
-function abortTimers() {
-  if (fillInterval)  { clearInterval(fillInterval);  fillInterval  = null; }
-  if (readyInterval) { clearInterval(readyInterval); readyInterval = null; }
-  phase = 'waiting'; fillRemaining = readyRemaining = 0; sendPhase();
-}
-
-/* websocket frame parsing  */
-function decodeText(frameBuf) {
-  const op = frameBuf[0] & 0x0f;
-  if (op !== 0x1) return null; // not text
-  let len = frameBuf[1] & 0x7f;
-  let off = 2;
-  if (len === 126) { len = (frameBuf[2] << 8) + frameBuf[3]; off = 4; }
-  off += 4;                       // skip mask
-  const mask = frameBuf.slice(off - 4, off);
-  const data = frameBuf.slice(off, off + len);
-  for (let i = 0; i < data.length; i++) data[i] ^= mask[i % 4];
+function parseText(frame){
+  const op = frame[0]&0x0f; if(op!==1) return null;
+  let len=frame[1]&0x7f,off=2;
+  if(len===126){len=(frame[2]<<8)+frame[3];off=4;}
+  const mask=frame.slice(off,off+4); off+=4;
+  const data=frame.slice(off,off+len);
+  for(let i=0;i<data.length;i++) data[i]^=mask[i%4];
   return data.toString();
 }
 
-/* create server  */
-const server = http.createServer();
+const server=http.createServer();
+server.on('upgrade',(req,s)=>{
+  /* handshake */
+  const key=req.headers['sec-websocket-key'];
+  const accept=crypto.createHash('sha1').update(key+GUID).digest('base64');
+  s.write(`HTTP/1.1 101 Switching Protocols\r
+Upgrade: websocket\r
+Connection: Upgrade\r
+Sec-WebSocket-Accept: ${accept}\r
+\r\n`);
 
-server.on('upgrade', (req, socket) => {
-  const key = req.headers['sec-websocket-key'];
-  const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
+  /* register socket */
+  const id=nextId++;
+  sockets.set(s,{id,nick:null});
+  lobbyUpdate(); lobbyState();
 
-  socket.write([
-    'HTTP/1.1 101 Switching Protocols',
-    'Upgrade: websocket',
-    'Connection: Upgrade',
-    `Sec-WebSocket-Accept: ${accept}`,
-    '\r\n'
-  ].join('\r\n'));
+  s.on('data',buf=>{
+    let p=0;
+    while(p<buf.length){
+      let len=buf[p+1]&0x7f, hdr=2;
+      if(len===126){len=(buf[p+2]<<8)+buf[p+3];hdr=4;}
+      hdr+=4; const frame=buf.slice(p,p+hdr+len); p+=hdr+len;
+      const op=frame[0]&0x0f;
+      if(op===8){s.end();return;}
+      if(op===9){s.write(Buffer.from([0x8a,0x00]));continue;}
+      const txt=parseText(frame); if(!txt) continue;
+      let msg; try{msg=JSON.parse(txt);}catch{continue;}
 
-  const id = nextId++;
-  clients.set(socket, { id, nick: null });
-  updateLobby(); sendPhase();
-
-  socket.on('data', buf => {
-    /* iterate through possibly multiple frames in the TCP chunk */
-    let pos = 0;
-    while (pos < buf.length) {
-      const lenByte = buf[pos + 1] & 0x7f;
-      let hdr = 2, len = lenByte;
-      if (lenByte === 126) { len = (buf[pos + 2] << 8) + buf[pos + 3]; hdr = 4; }
-      hdr += 4; // mask
-      const frame = buf.slice(pos, pos + hdr + len);
-      pos += hdr + len;
-
-      const opcode = frame[0] & 0x0f;
-      if (opcode === 0x8) { socket.end(); return; }     // close
-      if (opcode === 0x9) { socket.write(Buffer.from([0x8a, 0x00])); continue; } // ping/pong
-      if (opcode !== 0x1) continue;                     // ignore non-text
-
-      const txt = decodeText(frame);
-      if (!txt) continue;
-      let msg; try { msg = JSON.parse(txt); } catch { continue; }
-
-      /* --- handle messages  */
-      if (msg.type === 'join') {
-        clients.get(socket).nick = String(msg.nick).slice(0, 20);
-        updateLobby();
-
-        /* start fill timer if needed */
-        if (clients.size >= 2 && phase === 'waiting') startFillTimer();
+      /*  messages  */
+      if(msg.type==='join'){
+        sockets.get(s).nick=String(msg.nick).slice(0,20);
+        lobbyUpdate();
+        if(sockets.size>=2 && phase==='waiting') startFill();
       }
-      if (msg.type === 'chat') {
-        broadcast('chat', { id, nick: clients.get(socket).nick, text: msg.text });
+
+      if(msg.type==='chat'){
+        sendAll('chat',{id,nick:sockets.get(s).nick,text:msg.text});
+      }
+
+      if(phase==='playing' && msg.type==='move'){
+        const pData = players.get(id); if(!pData) continue;
+        const {x,y,dir}=msg;
+        /* very naïve validation: within map bounds */
+        if(x<0||y<0||x>=MAP_SIZE||y>=MAP_SIZE) continue;
+        players.set(id,{x,y,dir,lives:pData.lives});
+        sendAll('playerMove',{id,x,y,dir});
       }
     }
   });
 
-  socket.on('close', () => {
-    clients.delete(socket); updateLobby();
-    if (clients.size < 2) abortTimers();
+  s.on('close',()=>{
+    sockets.delete(s); players.delete(id);
+    lobbyUpdate();
+    if(sockets.size<2){fillI&&clearInterval(fillI);readyI&&clearInterval(readyI);phase='waiting';lobbyState();}
   });
-
-  socket.on('error', () => socket.destroy());
+  s.on('error',()=>s.destroy());
 });
 
-server.listen(PORT, () =>
-  console.log(`🟢 WebSocket lobby running at ws://localhost:${PORT}`)
-);
+server.listen(PORT,()=>console.log('🟢 WS server on ws://localhost:'+PORT));

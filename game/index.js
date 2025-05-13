@@ -1,40 +1,101 @@
 import { createApp, createElement, store } from '../src/index.js';
 import { NicknameForm } from './components/NicknameForm.js';
-import { Lobby }        from './components/Lobby.js';
+import { Lobby } from './components/Lobby.js';
+import { generateGrid } from './map.js';
 
+// Initial state setup
 store.setState({
-  gameState : 'init',   // init | lobby | playing | gameOver
-  nickname  : null,
-  lobby     : { players: [] },
-  socket    : null,
-  chatDraft : '' 
+  gameState: 'init', // init | lobby | playing | gameOver
+  nickname: null,
+  nicknameDraft: '',
+
+  // Lobby
+  lobby: { players: [] },
+  lobbyState: {},
+  chatMessages: [],
+  chatDraft: '',
+
+  // Network
+  socket: null,
+  socketId: null,
+  localPlayerId: null,
+
+  // World
+  mapSeed: null,
+  map: { size: 15, grid: [] },
+  players: {}, // id -> player object
+  bombs: [],
+  powerups: [],
+  explosions: []
 });
 
-/*  connect to our raw WebSocket server  */
+// WebSocket connection setup
 function connectWS() {
   const ws = new WebSocket('ws://localhost:8080');
 
   ws.addEventListener('open', () => console.log('🔌 WS connected'));
+
   ws.addEventListener('message', evt => {
     const { type, payload } = JSON.parse(evt.data);
-  
-    if (type === 'lobbyUpdate')
-      store.setState({ lobby: { players: payload }});
-  
+
+    // lobby list
+    if (type === 'lobbyUpdate') {
+      store.setState({ lobby: { players: payload } });
+      const me = payload.find(p => p.nick === store.getState().nickname);
+      if (me && !store.getState().socketId)
+        store.setState({ socketId: me.id, localPlayerId: me.id });
+    }
+
+    // lobby timers (fill / ready)
     if (type === 'lobbyState')
       store.setState({ lobbyState: payload });
-  
+
+    // chat line
     if (type === 'chat') {
-      const { chatMessages = [] } = store.getState();
+      const { chatMessages } = store.getState();
       store.setState({ chatMessages: [...chatMessages, payload] });
     }
-  
+
+    // game starts
     if (type === 'gameStart') {
-      store.setState({ gameState: 'playing' });
+      const { seed, players } = payload;
+
+      // enrich every player with defaults the server does not send
+      const defaults = {
+        bombCount: 1,
+        bombRange: 1,
+        speed: 1,
+        direction: 'front'
+      };
+      const playersObj = {};
+      players.forEach(([id, data]) => {
+        playersObj[id] = { id: +id, ...defaults, ...data };
+      });
+
+      store.setState({
+        gameState: 'playing',
+        mapSeed: seed,
+        map: { size: 15, grid: generateGrid(15, seed) },
+        players: playersObj
+      });
+
+      // attach keyboard *once*, now that the map exists
+      if (!window.__kbAttached) {
+        setupKeyboardControls();
+        window.__kbAttached = true;
+      }
+    }
+
+    // movement from somebody else
+    if (type === 'playerMove') {
+      const { players } = store.getState();
+      players[payload.id] = { ...players[payload.id], ...payload };
+      store.setState({ players: { ...players } });
     }
   });
+
   ws.addEventListener('close', () => {
-    console.warn('WS closed – retrying in 3 s');
+    console.warn('WS closed – reconnecting in 3 s');
     setTimeout(connectWS, 3000);
   });
 
@@ -42,370 +103,196 @@ function connectWS() {
 }
 connectWS();
 
-/* ---------- root component --------------------------------------------- */
-function Root() {
-  const { gameState } = store.getState();
-
-  if (gameState === 'init')    return NicknameForm();
-  if (gameState === 'lobby')   return Lobby();
-  if (gameState === 'playing') return GameApp();   // your existing game
-  if (gameState === 'gameOver')return createElement('h1', {}, 'Game Over');
+// helpers to talk to server
+function sendPlayerMove(x, y, dir) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'move', x, y, dir }));
+}
+function sendBombPlaced(bomb) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'bomb', bomb }));
+}
+function sendPlayerHit(lives) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'hit', lives }));
 }
 
-/* ---------- mount via mini-framework ----------------------------------- */
+// Root component router
+function Root() {
+  const { gameState } = store.getState();
+  if (gameState === 'init') return NicknameForm();
+  if (gameState === 'lobby') return Lobby();
+  if (gameState === 'playing') return GameApp();
+  return createElement('h1', {}, 'Game Over');
+}
+
+// Mount the application
 const app = createApp('#app');
 store.subscribe(() => app.mount(Root));
 app.mount(Root);
 
-const CELL_SIZE = 40;
-const GRID_SIZE = 15;
+// Rendering & input
+const CELL = 40;
 
-// Debugging helper
-function logAssetLoad(type, path) {
-  console.log(`Loading ${type} asset: ${path}`);
-}
-
-// Initial game state
-store.setState({
-    gameState: 'init', 
-    map: {
-      size: GRID_SIZE, 
-      grid: [], 
-    },
-    players: [
-      {
-        id: 1,
-        x: 1,
-        y: 1,
-        lives: 3,
-        speed: 1,
-        bombCount: 1,
-        bombRange: 1,
-        direction: 'front' 
-      }
-    ],
-    bombs: [],
-    powerups: [],
-    explosions: []
-  });
-
-// Generate initial map
-function generateMap() {
-  const { map } = store.getState();
-  const { size } = map;
-  const grid = [];
-  
-  // Create the grid
+// fallback map for local preview
+function generateFallbackMap() {
+  const size = 15, grid = [];
   for (let y = 0; y < size; y++) {
     const row = [];
     for (let x = 0; x < size; x++) {
-      let cellType = 'empty';
-      
-      // Create walls in a pattern (every other row and column)
-      if (x % 2 === 0 && y % 2 === 0) {
-        cellType = 'wall';
-      } 
-      // Add some random blocks (except at player spawn points)
-      else if (Math.random() < 0.3 && 
-              !((x < 2 && y < 2) || // top-left spawn
-                (x < 2 && y > size - 3) || // bottom-left spawn
-                (x > size - 3 && y < 2) || // top-right spawn
-                (x > size - 3 && y > size - 3))) { // bottom-right spawn
-        cellType = 'block';
-      }
-      
-      row.push({
-        x,
-        y,
-        type: cellType
-      });
+      let t = 'empty';
+      if (x % 2 === 0 && y % 2 === 0) t = 'wall';
+      else if (Math.random() < 0.3 &&
+        !((x < 2 && y < 2) || (x < 2 && y > size - 3) || (x > size - 3 && y < 2) || (x > size - 3 && y > size - 3)))
+        t = 'block';
+      row.push({ x, y, type: t });
     }
     grid.push(row);
   }
-  
-  // Ensure player spawn point is clear
-  if (grid[1] && grid[1][1]) {
-    grid[1][1].type = 'empty';
-  }
-  
-  // Update the store
-  store.setState({
-    map: {
-      ...map,
-      grid
-    }
+  grid[1][1].type = 'empty';
+  store.setState({ map: { size, grid } });
+}
+
+// create DOM nodes for players
+function renderPlayers() {
+  return Object.values(store.getState().players).map(p => {
+    const el = document.createElement('div');
+    el.className = `player player-${p.id}`;
+    el.dataset.playerId = p.id;
+    const dir = p.direction || 'front';
+    el.dataset.direction = dir;
+    el.style.left = `${p.x * CELL}px`;
+    el.style.top = `${p.y * CELL}px`;
+    el.classList.add(`player-direction-${dir}`);
+    setTimeout(() => { el.style.backgroundImage = `url('./assets/${dir}.png')`; }, 0);
+    return el;
   });
 }
 
-// Player Component - Create DOM elements for players
-function renderPlayers() {
-    const { players } = store.getState();
-    const playerElements = [];
-    
-    players.forEach(player => {
-      const playerElement = document.createElement('div');
-      playerElement.className = `player player-${player.id}`;
-      playerElement.style.left = `${player.x * CELL_SIZE}px`;
-      playerElement.style.top = `${player.y * CELL_SIZE}px`;
-      playerElement.dataset.playerId = player.id;
-      
-      // Set the default direction to 'front'
-      const direction = player.direction || 'front';
-      playerElement.dataset.direction = direction;
-      
-      // Add class for the direction instead of setting style directly
-      playerElement.classList.add(`player-direction-${direction}`);
-      
-      // Set the background image after the element is added to the DOM
-      setTimeout(() => {
-        playerElement.style.backgroundImage = `url('./assets/${direction}.png')`;
-      }, 0);
-      
-      playerElements.push(playerElement);
-    });
-    
-    return playerElements;
-}
-
-// Components
+// UI components
 function GameTitle() {
   return createElement('h1', { class: 'game-title' }, 'Bomberman DOM');
 }
-
 function GameGrid() {
   const { map, bombs, powerups, explosions } = store.getState();
-  const { grid } = map;
-  
-  console.log("Creating game grid with cells:", grid.length * grid[0].length);
-  
-  // Create the grid cells
-  const gridElement = createElement('div', { class: 'game-grid' },
-    ...grid.flat().map(cell => {
-      const cellElement = createElement('div', { 
-        class: `cell cell-${cell.type}`,
-        'data-x': cell.x,
-        'data-y': cell.y,
-        'data-cell-type': cell.type 
-      });
-      
-      return cellElement;
-    })
-  );
-  
-  // Create the game container
-  const gameContainer = createElement('div', { class: 'game-container' }, gridElement);
-  
-  // After the component is mounted, add the player and dynamic elements
+  const gridEl = createElement('div', { class: 'game-grid' },
+    ...map.grid.flat().map(c =>
+      createElement('div', { class: `cell cell-${c.type}`, 'data-x': c.x, 'data-y': c.y, 'data-cell-type': c.type })
+    ));
+  const container = createElement('div', { class: 'game-container' }, gridEl);
+
   setTimeout(() => {
-    const container = document.querySelector('.game-container');
-    if (container) {
-      console.log('Game container found, updating cells and adding entities');
-      
-      // Update cell background images after mounting
-      document.querySelectorAll('.cell').forEach(cell => {
-        const cellType = cell.dataset.cellType;
-        if (cellType === 'wall') {
-          cell.style.backgroundImage = "url('./assets/wall.png')";
-        } else if (cellType === 'block') {
-          cell.style.backgroundImage = "url('./assets/block.png')";
-        } else if (cellType === 'empty') {
-          cell.style.backgroundImage = "url('./assets/floor.png')";
-        }
-      });
-      
-      // Remove existing dynamic elements to avoid duplicates
-      container.querySelectorAll('.player, .bomb, .powerup, .explosion').forEach(el => el.remove());
-      
-      // Add players
-      renderPlayers().forEach(player => {
-        container.appendChild(player);
-      });
-      
-      // Add bombs
-      bombs.forEach(bomb => {
-        addBombElementToDOM(bomb);
-      });
-      
-      // Add power-ups
-      powerups.forEach(powerup => {
-        addPowerUpToDOM(powerup);
-      });
-      
-      // Add explosions
-      explosions.forEach(explosion => {
-        addExplosionToDOM(explosion);
-      });
-    } else {
-      console.error('Game container not found!');
-    }
+    const cont = document.querySelector('.game-container');
+    if (!cont) return;
+    document.querySelectorAll('.cell').forEach(cell => {
+      const t = cell.dataset.cellType;
+      cell.style.backgroundImage =
+        t === 'wall' ? "url('./assets/wall.png')" :
+        t === 'block' ? "url('./assets/block.png')" :
+        "url('./assets/floor.png')";
+    });
+    cont.querySelectorAll('.player,.bomb,.powerup,.explosion').forEach(el => el.remove());
+    renderPlayers().forEach(p => cont.appendChild(p));
+    bombs.forEach(addBombElementToDOM);
+    powerups.forEach(addPowerUpToDOM);
+    explosions.forEach(addExplosionToDOM);
   }, 0);
-  
-  return gameContainer;
+  return container;
 }
-  
-
 function PlayerInfo() {
-  const { players } = store.getState();
-  const player = players[0]; // Get first player
-  
+  const { players, localPlayerId } = store.getState();
+  const me = players[localPlayerId] || {};
   return createElement('div', { class: 'player-info' },
-    createElement('div', { class: 'player-lives' }, `Lives: ${player.lives}`),
-    createElement('div', { class: 'player-bombs' }, `Bombs: ${player.bombCount}`),
-    createElement('div', { class: 'player-range' }, `Range: ${player.bombRange}`),
-    createElement('div', { class: 'player-speed' }, `Speed: ${player.speed}`)
+    createElement('div', {}, `Lives: ${me.lives ?? '-'}`),
+    createElement('div', {}, `Bombs: ${me.bombCount ?? '-'}`),
+    createElement('div', {}, `Range: ${me.bombRange ?? '-'}`),
+    createElement('div', {}, `Speed: ${me.speed ?? '-'}`)
   );
 }
-
 function GameApp() {
   const { map } = store.getState();
-
-  // Create grid once
-  if (!map.grid.length) generateMap();
-
-  return createElement(
-    'div',
-    { class: 'game-app' },
+  if (!map.grid.length) generateFallbackMap(); // only for offline preview
+  return createElement('div', { class: 'game-app' },
     GameTitle(),
     PlayerInfo(),
     GameGrid()
   );
 }
-// Movement handling with delay to prevent janky movement
-let isMoving = false;
-const moveDelay = 150; // ms between moves
 
-// Update the handleKeyDown function to change player direction
+// Movement
+let moving = false;
+const MOVE_MS = 150;
+
 function handleKeyDown(e) {
-  if (isMoving || store.getState().gameState !== 'playing') return;
-  
+  if (moving || store.getState().gameState !== 'playing') return;
+
   const { players, localPlayerId } = store.getState();
-  if (!localPlayerId || !players || !players[localPlayerId]) return;
-  
-  const player = players[localPlayerId];
-  
-  let newX = player.x;
-  let newY = player.y;
-  let newDirection = player.direction;
-  
+  const me = players[localPlayerId];
+  if (!me) return;
+
+  let nx = me.x, ny = me.y, nd = me.direction || 'front';
   switch (e.key) {
-    case 'ArrowUp':
-      newY -= player.speed;
-      newDirection = 'back';
-      break;
-    case 'ArrowDown':
-      newY += player.speed;
-      newDirection = 'front';
-      break;
-    case 'ArrowLeft':
-      newX -= player.speed;
-      newDirection = 'left';
-      break;
-    case 'ArrowRight':
-      newX += player.speed;
-      newDirection = 'right';
-      break;
-    case ' ': // Space bar to place bombs
-      placeBomb(player);
-      return;
-    default:
-      return; // Don't handle other keys
-  }
-  
-  // Update direction even if we can't move
-  if (newDirection !== player.direction) {
-    const updatedPlayers = { ...players };
-    updatedPlayers[localPlayerId] = {
-      ...player,
-      direction: newDirection
-    };
-    
-    store.setState({ players: updatedPlayers });
-    
-    // Update player sprite without full re-render
-    updatePlayerSprite(player.id, newDirection);
-    
-    // Send direction update to server
-    sendPlayerMove(player.x, player.y, newDirection);
-  }
-  
-  // Simple collision detection for movement
-  if (isValidMove(newX, newY)) {
-    isMoving = true;
-    
-    const updatedPlayers = { ...players };
-    updatedPlayers[localPlayerId] = {
-      ...player,
-      x: newX,
-      y: newY,
-      direction: newDirection
-    };
-    
-    store.setState({ players: updatedPlayers });
-    
-    updatePlayerPosition(player.id, newX, newY);
-    
-    // Send movement to server
-    sendPlayerMove(newX, newY, newDirection);
-    
-    // Reset moving flag after delay
-    setTimeout(() => {
-      isMoving = false;
-    }, moveDelay);
-  }
-}
-  
-  function updatePlayerSprite(playerId, direction) {
-    const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
-    if (playerElement) {
-      playerElement.dataset.direction = direction;
-      const assetPath = `./assets/${direction}.png`;
-      logAssetLoad('player update', assetPath);
-      playerElement.style.backgroundImage = `url('${assetPath}')`;
-    }
-  }
-  
-  function updatePlayerPosition(playerId, x, y) {
-    const playerElement = document.querySelector(`.player[data-player-id="${playerId}"]`);
-    if (playerElement) {
-      playerElement.style.left = `${x * CELL_SIZE}px`;
-      playerElement.style.top = `${y * CELL_SIZE}px`;
-    }
+    case 'ArrowUp': ny -= me.speed; nd = 'back'; break;
+    case 'ArrowDown': ny += me.speed; nd = 'front'; break;
+    case 'ArrowLeft': nx -= me.speed; nd = 'left'; break;
+    case 'ArrowRight': nx += me.speed; nd = 'right'; break;
+    case ' ': placeBomb(me); return;
+    default: return;
   }
 
-// Setup keyboard controls
-function setupKeyboardControls() {
-  document.addEventListener('keydown', handleKeyDown);
+  // direction-only change
+  if (nd !== me.direction) {
+    players[localPlayerId] = { ...me, direction: nd };
+    store.setState({ players: { ...players } });
+    updatePlayerSprite(me.id, nd);
+    sendPlayerMove(me.x, me.y, nd);
+  }
+
+  if (!isPassable(nx, ny)) return;
+
+  moving = true;
+  players[localPlayerId] = { ...me, x: nx, y: ny, direction: nd };
+  store.setState({ players: { ...players } });
+  updatePlayerPosition(me.id, nx, ny);
+  sendPlayerMove(nx, ny, nd);
+  setTimeout(() => moving = false, MOVE_MS);
 }
 
-// Check if the move is valid
-function isValidMove(x, y) {
+// safe passability check
+function isPassable(x, y) {
   const { map, bombs } = store.getState();
-  const { size, grid } = map;
-  
-  // Check boundaries
-  if (x < 0 || y < 0 || x >= size || y >= size) {
-    return false;
-  }
-  
-  // Check for walls and blocks
-  if (grid[y] && grid[y][x]) {
-    const cell = grid[y][x];
-    if (cell.type !== 'empty') {
-      return false;
-    }
-  } else {
-    return false;
-  }
-  
-  // Check for bombs
-  const bombAtPosition = bombs.some(bomb => bomb.x === x && bomb.y === y);
-  if (bombAtPosition) {
-    return false;
-  }
-  
+  if (!map.grid.length || !map.grid[y] || !map.grid[y][x]) return false;
+  if (x < 0 || y < 0 || x >= map.size || y >= map.size) return false;
+  if (map.grid[y][x].type !== 'empty') return false;
+  if (bombs.some(b => b.x === x && b.y === y)) return false;
   return true;
 }
 
+// keyboard listener
+function setupKeyboardControls() {
+  document.addEventListener('keydown', handleKeyDown, { passive: true });
+}
+
+// DOM helpers for sprite / position
+function updatePlayerSprite(id, dir) {
+  const el = document.querySelector(`.player[data-player-id="${id}"]`);
+  if (el) {
+    el.dataset.direction = dir;
+    el.style.backgroundImage = `url('./assets/${dir}.png')`;
+  }
+}
+function updatePlayerPosition(id, x, y) {
+  const el = document.querySelector(`.player[data-player-id="${id}"]`);
+  if (el) {
+    el.style.left = `${x * CELL}px`;
+    el.style.top = `${y * CELL}px`;
+  }
+}
+
+// Bombs, power-ups & explosions
 function placeBomb(player) {
   const { bombs } = store.getState();
   
@@ -414,13 +301,13 @@ function placeBomb(player) {
   // Check if player has bombs available
   if (bombs.filter(bomb => bomb.playerId === player.id).length >= player.bombCount) {
     console.log("Player has reached bomb limit");
-    return; 
+    return;
   }
   
   // Check if there's already a bomb at this position
   if (bombs.some(bomb => bomb.x === player.x && bomb.y === player.y)) {
     console.log("Bomb already exists at this position");
-    return; 
+    return;
   }
   
   // Create a new bomb
@@ -457,7 +344,6 @@ function placeBomb(player) {
   }, newBomb.timer);
 }
 
-
 function addBombElementToDOM(bomb) {
   console.log("Adding bomb element to DOM:", bomb);
   
@@ -478,12 +364,12 @@ function addBombElementToDOM(bomb) {
   const bombElement = document.createElement('div');
   bombElement.className = 'bomb';
   bombElement.id = `bomb-${bomb.id}`;
-  bombElement.style.left = `${bomb.x * CELL_SIZE}px`;
-  bombElement.style.top = `${bomb.y * CELL_SIZE}px`;
+  bombElement.style.left = `${bomb.x * CELL}px`;
+  bombElement.style.top = `${bomb.y * CELL}px`;
   bombElement.dataset.bombId = bomb.id;
   bombElement.dataset.stage = bomb.stage;
   
-  // Fix the path to use relative path consistently
+  // Set image path for bomb
   const bombImagePath = `./assets/bomb${bomb.stage}.png`;
   
   console.log("Using bomb image path:", bombImagePath);
@@ -549,7 +435,6 @@ function startBombCountdown(bomb) {
   }, 1000);
 }
 
-// Explosion logic
 function explodeBomb(bomb) {
   console.log("Exploding bomb:", bomb.id);
   
@@ -571,9 +456,9 @@ function explodeBomb(bomb) {
   // Check in all four directions
   const directions = [
     { dx: 0, dy: -1, name: 'up' }, // Up
-    { dx: 0, dy: 1, name: 'down' },  // Down
+    { dx: 0, dy: 1, name: 'down' }, // Down
     { dx: -1, dy: 0, name: 'left' }, // Left
-    { dx: 1, dy: 0, name: 'right' }   // Right
+    { dx: 1, dy: 0, name: 'right' } // Right
   ];
   
   // Process each direction
@@ -655,7 +540,7 @@ function explodeBomb(bomb) {
   checkPlayersInExplosion(newExplosions);
   
   // Update the state
-  store.setState({ 
+  store.setState({
     bombs: updatedBombs,
     explosions: allExplosions
   });
@@ -673,28 +558,26 @@ function explodeBomb(bomb) {
   }, 1000);
 }
 
-// Update cell type in the DOM
 function updateCellType(x, y, newType) {
-    const cellElement = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
-    if (cellElement) {
-      // Update the class and data attribute
-      cellElement.className = `cell cell-${newType}`;
-      cellElement.dataset.cellType = newType;
-      
-      // Update image based on new type
-      if (newType === 'wall') {
-        cellElement.style.backgroundImage = "url('./assets/wall.png')";
-      } else if (newType === 'block') {
-        cellElement.style.backgroundImage = "url('./assets/block.png')";
-      } else if (newType === 'empty') {
-        cellElement.style.backgroundImage = "url('./assets/floor.png')";
-      } else {
-        cellElement.style.backgroundImage = "";
-      }
+  const cellElement = document.querySelector(`.cell[data-x="${x}"][data-y="${y}"]`);
+  if (cellElement) {
+    // Update the class and data attribute
+    cellElement.className = `cell cell-${newType}`;
+    cellElement.dataset.cellType = newType;
+    
+    // Update image based on new type
+    if (newType === 'wall') {
+      cellElement.style.backgroundImage = "url('./assets/wall.png')";
+    } else if (newType === 'block') {
+      cellElement.style.backgroundImage = "url('./assets/block.png')";
+    } else if (newType === 'empty') {
+      cellElement.style.backgroundImage = "url('./assets/floor.png')";
+    } else {
+      cellElement.style.backgroundImage = "";
     }
   }
+}
 
-// Spawn a power-up at the given position
 function spawnPowerUp(x, y) {
   const { powerups } = store.getState();
   
@@ -702,11 +585,11 @@ function spawnPowerUp(x, y) {
   const powerUpTypes = ['bomb', 'flame', 'speed'];
   const type = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
   
-  const newPowerUp = { 
-    id: Date.now(), 
-    x, 
-    y, 
-    type 
+  const newPowerUp = {
+    id: Date.now(),
+    x,
+    y,
+    type
   };
   
   // Add to state
@@ -735,8 +618,8 @@ function addPowerUpToDOM(powerUp) {
   powerUpElement.className = `powerup powerup-${powerUp.type}`;
   
   // Center the power-up in the cell
-  powerUpElement.style.left = `${powerUp.x * CELL_SIZE + CELL_SIZE/2}px`;
-  powerUpElement.style.top = `${powerUp.y * CELL_SIZE + CELL_SIZE/2}px`;
+  powerUpElement.style.left = `${powerUp.x * CELL + CELL / 2}px`;
+  powerUpElement.style.top = `${powerUp.y * CELL + CELL / 2}px`;
   powerUpElement.dataset.powerupId = powerUp.id;
   
   let powerupImageUrl = '';
@@ -759,7 +642,6 @@ function addPowerUpToDOM(powerUp) {
   console.log("Power-up added to DOM:", powerUp.type);
 }
 
-// Add explosion to DOM
 function addExplosionToDOM(explosion) {
   const container = document.querySelector('.game-container');
   if (container) {
@@ -772,8 +654,8 @@ function addExplosionToDOM(explosion) {
     
     const explosionElement = document.createElement('div');
     explosionElement.className = `explosion explosion-${explosion.type}`;
-    explosionElement.style.left = `${explosion.x * CELL_SIZE}px`;
-    explosionElement.style.top = `${explosion.y * CELL_SIZE}px`;
+    explosionElement.style.left = `${explosion.x * CELL}px`;
+    explosionElement.style.top = `${explosion.y * CELL}px`;
     explosionElement.dataset.x = explosion.x;
     explosionElement.dataset.y = explosion.y;
     
@@ -781,7 +663,6 @@ function addExplosionToDOM(explosion) {
   }
 }
 
-// Remove explosions from DOM and state
 function removeExplosions(explosionsToRemove) {
   const { explosions } = store.getState();
   
@@ -792,8 +673,8 @@ function removeExplosions(explosionsToRemove) {
   });
   
   // Remove from state
-  const updatedExplosions = explosions.filter(e => 
-    !explosionsToRemove.some(toRemove => 
+  const updatedExplosions = explosions.filter(e =>
+    !explosionsToRemove.some(toRemove =>
       toRemove.x === e.x && toRemove.y === e.y
     )
   );
@@ -801,7 +682,6 @@ function removeExplosions(explosionsToRemove) {
   store.setState({ explosions: updatedExplosions });
 }
 
-// Check for players in explosion area
 function checkPlayersInExplosion(explosions) {
   const { players, localPlayerId } = store.getState();
   if (!players) return;
@@ -815,7 +695,7 @@ function checkPlayersInExplosion(explosions) {
     const player = players[playerId];
     
     // Check if this player is in any explosion area
-    const isHit = explosions.some(explosion => 
+    const isHit = explosions.some(explosion =>
       Math.floor(player.x) === explosion.x && Math.floor(player.y) === explosion.y
     );
     
@@ -858,124 +738,69 @@ function checkPlayersInExplosion(explosions) {
   }
 }
 
-
-
-// Game over function
-function gameOver() {
-  store.setState({ gameState: 'gameOver' });
-  alert('Game Over! You lost all your lives.');
-  // In a full implementation, we'd show a game over screen
-  // and allow the player to restart
-}
-
-// Check for power-up collection
 function checkPowerUpCollection() {
-  const { players, powerups } = store.getState();
+  const { players, powerups, localPlayerId } = store.getState();
+  if (!players || !powerups.length) return;
   
-  players.forEach(player => {
-    // Find any power-up at the player's position
-    const powerUpIndex = powerups.findIndex(
-      powerUp => powerUp.x === player.x && powerUp.y === player.y
+  // Make a copy of powerups to track which ones to remove
+  let updatedPowerups = [...powerups];
+  let powerupsRemoved = false;
+  
+  // Check each player against each powerup
+  Object.values(players).forEach(player => {
+    const collectedPowerups = powerups.filter(
+      powerup => Math.floor(player.x) === powerup.x && Math.floor(player.y) === powerup.y
     );
     
-    if (powerUpIndex !== -1) {
-      const powerUp = powerups[powerUpIndex];
+    if (collectedPowerups.length) {
+      // Apply the powerup effects to this player
+      let updatedPlayer = { ...player };
       
-      // Apply power-up effect
-      applyPowerUp(player, powerUp);
+      collectedPowerups.forEach(powerup => {
+        // Apply effect based on powerup type
+        switch (powerup.type) {
+          case 'bomb':
+            updatedPlayer.bombCount = (updatedPlayer.bombCount || 1) + 1;
+            break;
+          case 'flame':
+            updatedPlayer.bombRange = (updatedPlayer.bombRange || 1) + 1;
+            break;
+          case 'speed':
+            updatedPlayer.speed = (updatedPlayer.speed || 1) + 0.5;
+            break;
+        }
+        
+        // Remove from DOM
+        const powerupElement = document.querySelector(`.powerup[data-powerup-id="${powerup.id}"]`);
+        if (powerupElement) {
+          powerupElement.remove();
+        }
+        
+        // Track that we need to update state
+        powerupsRemoved = true;
+      });
       
-      // Remove power-up from game
-      const updatedPowerUps = [...powerups];
-      updatedPowerUps.splice(powerUpIndex, 1);
+      // Update this player in the state
+      const updatedPlayers = { ...players };
+      updatedPlayers[player.id] = updatedPlayer;
+      store.setState({ players: updatedPlayers });
       
-      // Remove from DOM
-      const powerUpElement = document.querySelector(`.powerup[data-powerup-id="${powerUp.id}"]`);
-      if (powerUpElement) {
-        powerUpElement.remove();
-      }
-      
-      // Update state
-      store.setState({ powerups: updatedPowerUps });
+      // Filter out collected powerups
+      updatedPowerups = updatedPowerups.filter(
+        powerup => !collectedPowerups.some(collected => collected.id === powerup.id)
+      );
     }
   });
+  
+  // Update powerups state if any were collected
+  if (powerupsRemoved) {
+    store.setState({ powerups: updatedPowerups });
+  }
 }
 
-// Apply power-up effect to player
-function applyPowerUp(player, powerUp) {
-  const { players } = store.getState();
-  let updatedPlayer = { ...player };
-  
-  switch (powerUp.type) {
-    case 'bomb':
-      // Increase bomb count
-      updatedPlayer.bombCount += 1;
-      break;
-    case 'flame':
-      // Increase explosion range
-      updatedPlayer.bombRange += 1;
-      break;
-    case 'speed':
-      // Increase speed
-      updatedPlayer.speed += 0.5;
-      break;
-  }
-  
-  // Update player in state
-  const updatedPlayers = players.map(p => 
-    p.id === player.id ? updatedPlayer : p
-  );
-  
-  store.setState({ players: updatedPlayers });
-}
-
-// Check assets
-function checkAssets() {
-    const assetPaths = [
-      './assets/front.png',
-      './assets/back.png',
-      './assets/left.png',
-      './assets/right.png',
-      './assets/wall.png',
-      './assets/block.png',
-      './assets/floor.png',
-      './assets/bomb1.png',
-      './assets/bomb2.png',
-      './assets/bomb3.png',
-      './assets/pubomb.png',
-      './assets/pubigbomb.png',
-      './assets/puspeed.png'
-    ];
-    
-    console.log('Checking asset availability...');
-    assetPaths.forEach(path => {
-      const img = new Image();
-      img.onload = () => console.log(`✅ Asset loaded: ${path}`);
-      img.onerror = () => console.error(`❌ Asset failed to load: ${path}`);
-      img.src = path;
-    });
-  }
 // Game loop
 function gameLoop() {
-  // Check for power-up collections
   checkPowerUpCollection();
-  
-  // Continue game loop
   requestAnimationFrame(gameLoop);
 }
-
-function init() {
-  // subscribe once and mount
-  store.subscribe(() => app.mount(Root));
-  setupKeyboardControls();
-  requestAnimationFrame(gameLoop);
-  app.mount(Root);
-}
-
-// Render function
-function render() {
-  console.log("Rendering game...");
-  app.mount(GameApp());
-}
-
-// Start the game
-init();
+requestAnimationFrame(gameLoop);

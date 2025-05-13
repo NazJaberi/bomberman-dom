@@ -8,13 +8,23 @@ export function NicknameForm() {
     nick = nick.trim();
     if (!nick) return;
 
-    store.setState({ nickname: nick, gameState: 'lobby' });
+    const ws = store.getState().socket;
 
-    const { socket } = store.getState();
-    socket.send(JSON.stringify({ type: 'join', nick }));
+    const sendJoin = () =>
+      ws.send(JSON.stringify({ type: 'join', nick }));
+
+    if (ws.readyState === WebSocket.OPEN) {
+      sendJoin();
+    } else {
+      ws.addEventListener('open', sendJoin, { once: true });
+    }
+
+    store.setState({ nickname: nick, gameState: 'lobby' });
   };
 
-  return createElement('form', { class: 'nick-form', onsubmit: submit },
+  return createElement(
+    'form',
+    { class: 'nick-form', onsubmit: submit },
     createElement('input', {
       type: 'text',
       placeholder: 'Enter nickname',

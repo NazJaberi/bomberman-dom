@@ -261,3 +261,20 @@ body {
   padding: 0;
   margin-top: 12px;
 }
+
+/*  chat styles  */
+.chat-box { width: 300px; margin: 16px auto 0; font-size: 0.9rem; }
+.chat-log {
+  height: 150px;
+  overflow-y: auto;
+  background:#111;
+  border:1px solid #333;
+  padding:4px;
+}
+.chat-line { margin-bottom:2px; }
+.chat-nick { color:#0af; }
+.chat-form input {
+  width:100%; padding:4px; border:none; outline:none;
+  background:#222; color:#fff;
+}
+.lobby-phase { margin-top:6px; color:#ffb400; }

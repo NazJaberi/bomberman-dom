@@ -16,8 +16,21 @@ function connectWS() {
   ws.addEventListener('open', () => console.log('🔌 WS connected'));
   ws.addEventListener('message', evt => {
     const { type, payload } = JSON.parse(evt.data);
+  
     if (type === 'lobbyUpdate')
       store.setState({ lobby: { players: payload }});
+  
+    if (type === 'lobbyState')
+      store.setState({ lobbyState: payload });
+  
+    if (type === 'chat') {
+      const { chatMessages = [] } = store.getState();
+      store.setState({ chatMessages: [...chatMessages, payload] });
+    }
+  
+    if (type === 'gameStart') {
+      store.setState({ gameState: 'playing' });
+    }
   });
   ws.addEventListener('close', () => {
     console.warn('WS closed – retrying in 3 s');
@@ -243,30 +256,16 @@ function PlayerInfo() {
 }
 
 function GameApp() {
-  const { gameState, map } = store.getState();
-  
-  // Show login screen
-  if (gameState === 'login') {
-    return LoginScreen();
-  }
-  
-  // Show waiting room
-  if (gameState === 'waiting') {
-    return WaitingRoom();
-  }
-  
-  // Game is playing - make sure map is generated
-  if (!map.grid.length) {
-    console.log("Generating map...");
-    generateMap();
-    return GameApp(); 
-  }
-  
-  console.log("Rendering GameApp");
-  return createElement('div', { class: 'game-app' },
+  const { map } = store.getState();
+
+  // Create grid once
+  if (!map.grid.length) generateMap();
+
+  return createElement(
+    'div',
+    { class: 'game-app' },
     GameTitle(),
-    MultiPlayerInfo(), 
-    GameChat(),
+    PlayerInfo(),
     GameGrid()
   );
 }
@@ -963,29 +962,12 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
-// Initialize
 function init() {
-  console.log("Starting game initialization...");
-  
-  // Initialize multiplayer functionality
-  initializeMultiplayer();
-  
-  // Check assets
-  checkAssets();
-  
-  // Subscribe to state changes
-  store.subscribe(render);
-  
-  // Setup keyboard controls
+  // subscribe once and mount
+  store.subscribe(() => app.mount(Root));
   setupKeyboardControls();
-  
-  // Start game loop
   requestAnimationFrame(gameLoop);
-  
-  // Initial render
-  render();
-  
-  console.log("Game initialization complete!");
+  app.mount(Root);
 }
 
 // Render function

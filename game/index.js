@@ -6,10 +6,11 @@ store.setState({
   gameState : 'init',   // init | lobby | playing | gameOver
   nickname  : null,
   lobby     : { players: [] },
-  socket    : null
+  socket    : null,
+  chatDraft : '' 
 });
 
-/* ---------- connect to our raw WebSocket server ------------------------ */
+/*  connect to our raw WebSocket server  */
 function connectWS() {
   const ws = new WebSocket('ws://localhost:8080');
 

@@ -55,13 +55,27 @@ function connectWS() {
     if (type === 'chat') {
       const { chatMessages } = store.getState();
       store.setState({ chatMessages: [...chatMessages, payload] });
+      updateChatMessages(); // Force update the chat display
     }
 
     // Handle game start
     if (type === 'gameStart') {
       const { seed, players } = payload;
       const obj = {};
-      players.forEach(([id, data]) => (obj[id] = { ...data, id: +id }));
+      players.forEach(([id, data]) => {
+        // Convert numeric strings to actual numbers
+        obj[id] = { 
+          ...data, 
+          id: +id,
+          x: +data.x,
+          y: +data.y,
+          lives: +data.lives || 3,
+          bombCount: 1,
+          bombRange: 1,
+          speed: 1
+        };
+      });
+      
       store.setState({
         gameState: 'playing',
         mapSeed: seed,
@@ -73,19 +87,182 @@ function connectWS() {
     // Handle player movement
     if (type === 'playerMove') {
       const { players } = store.getState();
-      if (players[payload.id]) {
-        // Don't apply movement update to local player - prevents teleporting
-        if (payload.id == store.getState().localPlayerId) return;
+      const { id, x, y, dir } = payload;
+      
+      // Make sure player exists
+      if (!players[id]) return;
+      
+      // Skip if it's the local player - prevents teleporting
+      if (id == store.getState().localPlayerId) return;
+      
+      // Update player state with proper numeric values
+      players[id] = { 
+        ...players[id], 
+        x: +x, 
+        y: +y, 
+        dir: dir || players[id].dir,
+        direction: dir || players[id].direction 
+      };
+      
+      // Update DOM directly 
+      updatePlayerPosition(id, +x, +y);
+      if (dir) updatePlayerSprite(id, dir);
+      
+      // Update state without re-render
+      store.setState({ players: { ...players } }, false);
+    }
+    
+    // Handle bomb placed
+    if (type === 'bombPlaced') {
+      const { bombs } = store.getState();
+      
+      // Skip if we already have this bomb
+      if (bombs.some(b => b.id === payload.id)) return;
+      
+      const newBomb = {
+        id: payload.id,
+        playerId: +payload.playerId,
+        x: +payload.x,
+        y: +payload.y,
+        range: +payload.range || 1,
+        timer: +payload.timer || 3000,
+        countdown: +payload.countdown || 3,
+        stage: +payload.stage || 1
+      };
+      
+      // Add bomb to state
+      store.setState({ bombs: [...bombs, newBomb] }, false);
+      
+      // Add to DOM
+      addBombElementToDOM(newBomb);
+      
+      // Start countdown
+      startBombCountdown(newBomb);
+      
+      // Schedule explosion
+      setTimeout(() => explodeBomb(newBomb), newBomb.timer);
+    }
+    
+    // Handle block destroyed
+    if (type === 'blockDestroyed') {
+      const { x, y } = payload;
+      const { map } = store.getState();
+      
+      // Make sure block exists and is a block
+      if (map.grid[y] && map.grid[y][x] && map.grid[y][x].type === 'block') {
+        // Update the grid
+        const updatedGrid = [...map.grid];
+        updatedGrid[y][x] = { ...updatedGrid[y][x], type: 'empty' };
         
-        players[payload.id] = { ...players[payload.id], ...payload };
+        // Update state without re-render
+        store.setState({ 
+          map: { ...map, grid: updatedGrid } 
+        }, false);
         
-        // Update DOM directly instead of triggering full re-render
-        updatePlayerPosition(payload.id, payload.x, payload.y);
-        updatePlayerSprite(payload.id, payload.dir);
-        
-        // Update state without triggering full re-render
-        store.setState({ players: { ...players } }, false);
+        // Update cell visually
+        updateCellType(x, y, 'empty');
       }
+    }
+    
+    // Handle powerup spawned - use server-authoritative approach
+    if (type === 'powerupSpawned') {
+      const { powerups } = store.getState();
+      
+      // Skip if we already have this powerup
+      if (powerups.some(p => p.id === payload.id)) return;
+      
+      const newPowerUp = {
+        id: payload.id,
+        x: +payload.x,
+        y: +payload.y,
+        type: payload.type
+      };
+      
+      // Add to state without re-render
+      store.setState({ powerups: [...powerups, newPowerUp] }, false);
+      
+      // Add to DOM
+      addPowerUpToDOM(newPowerUp);
+    }
+    
+    // Handle powerup collected
+    if (type === 'powerupCollected') {
+      const { powerups, players } = store.getState();
+      const { powerupId, playerId, newStats } = payload;
+      
+      // Find and remove powerup
+      const updatedPowerups = powerups.filter(p => p.id !== powerupId);
+      
+      // Update player stats if this player exists
+      if (players[playerId]) {
+        players[playerId] = {
+          ...players[playerId],
+          bombCount: +newStats.bombCount || players[playerId].bombCount,
+          bombRange: +newStats.bombRange || players[playerId].bombRange,
+          speed: +newStats.speed || players[playerId].speed
+        };
+      }
+      
+      // Update state
+      store.setState({
+        powerups: updatedPowerups,
+        players: { ...players }
+      }, false);
+      
+      // Remove powerup from DOM
+      const powerupElement = document.querySelector(`.powerup[data-powerup-id="${powerupId}"]`);
+      if (powerupElement) powerupElement.remove();
+      
+      // Update UI if it's the local player
+      if (playerId == store.getState().localPlayerId) {
+        updatePlayerInfoUI();
+      }
+    }
+    
+    // Handle player hit
+    if (type === 'playerHit') {
+      const { players } = store.getState();
+      if (players[payload.id]) {
+        // Update player lives
+        players[payload.id] = { 
+          ...players[payload.id], 
+          lives: +payload.lives 
+        };
+        
+        // If player is dead
+        if (+payload.lives <= 0) {
+          // Remove player element
+          const playerEl = document.querySelector(`.player[data-player-id="${payload.id}"]`);
+          if (playerEl) playerEl.remove();
+          
+          // Remove from players list
+          delete players[payload.id];
+        }
+        
+        // Update state without re-render
+        store.setState({ players: { ...players } }, false);
+        
+        // Update UI if it's local player
+        if (payload.id == store.getState().localPlayerId) {
+          updatePlayerInfoUI();
+        }
+        
+        // Check for game over
+        if (Object.keys(players).length === 1) {
+          const winningId = Object.keys(players)[0];
+          setTimeout(() => {
+            alert(`Game Over! ${players[winningId].nickname || 'Player ' + winningId} wins!`);
+          }, 200);
+        }
+      }
+    }
+    
+    // Handle game over
+    if (type === 'gameOver') {
+      setTimeout(() => {
+        alert(`Game Over! ${payload.winner} wins!`);
+        store.setState({ gameState: 'init' });
+      }, 200);
     }
   });
 
@@ -113,6 +290,36 @@ function sendPlayerHit(lives) {
   const ws = store.getState().socket;
   if (ws?.readyState === WebSocket.OPEN)
     ws.send(JSON.stringify({ type: 'hit', lives }));
+}
+function sendBlockDestroyed(x, y) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'blockDestroyed', x, y }));
+}
+function sendPowerupSpawned(powerup) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ 
+      type: 'powerupSpawned', 
+      id: powerup.id,
+      x: powerup.x,
+      y: powerup.y,
+      type: powerup.type
+    }));
+}
+function sendPowerupCollected(powerupId, newStats) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({
+      type: 'powerupCollected',
+      powerupId,
+      newStats
+    }));
+}
+function sendChatMessage(text) {
+  const ws = store.getState().socket;
+  if (ws?.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: 'chat', text }));
 }
 
 // Root component router
@@ -169,7 +376,7 @@ function renderPlayers() {
     const el = document.createElement('div');
     el.className = `player player-${p.id}`;
     el.dataset.playerId = p.id;
-    const dir = p.direction || 'front';
+    const dir = p.direction || p.dir || 'front';
     el.dataset.direction = dir;
     el.style.left = `${p.x * CELL}px`;
     el.style.top = `${p.y * CELL}px`;
@@ -178,7 +385,7 @@ function renderPlayers() {
     // Add a label with player name
     const nameLabel = document.createElement('div');
     nameLabel.className = 'player-name-label';
-    nameLabel.textContent = p.nickname || `Player ${p.id}`;
+    nameLabel.textContent = p.nickname || p.nick || `Player ${p.id}`;
     
     // Mark local player
     if (p.id == store.getState().localPlayerId) {
@@ -187,9 +394,9 @@ function renderPlayers() {
     
     el.appendChild(nameLabel);
     
-    setTimeout(() => {
-      el.style.backgroundImage = `url('./assets/${dir}.png')`;
-    }, 0);
+    // Set the background image directly instead of using setTimeout
+    el.style.backgroundImage = `url('./assets/${dir}.png')`;
+    
     return el;
   });
 }
@@ -215,29 +422,42 @@ function GameGrid() {
   setTimeout(() => {
     const cont = document.querySelector('.game-container');
     if (!cont) return;
+    
+    // Set cell backgrounds
     document.querySelectorAll('.cell').forEach(cell => {
       const t = cell.dataset.cellType;
-      cell.style.backgroundImage =
-        t === 'wall' ? "url('./assets/wall.png')" :
-        t === 'block' ? "url('./assets/block.png')" :
-        "url('./assets/floor.png')";
+      if (t === 'wall') {
+        cell.style.backgroundImage = "url('./assets/wall.png')";
+      } else if (t === 'block') {
+        cell.style.backgroundImage = "url('./assets/block.png')";
+      } else {
+        cell.style.backgroundImage = "url('./assets/floor.png')";
+      }
     });
+    
+    // Clear any existing entities first
     cont.querySelectorAll('.player, .bomb, .powerup, .explosion').forEach(el => el.remove());
+    
+    // Add players
     renderPlayers().forEach(p => cont.appendChild(p));
+    
+    // Add other game elements
     bombs.forEach(addBombElementToDOM);
     powerups.forEach(addPowerUpToDOM);
     explosions.forEach(addExplosionToDOM);
-  }, 0);
+  }, 50); // Slightly longer delay to ensure DOM is ready
+  
   return container;
 }
+
 function PlayerInfo() {
   const { players, localPlayerId } = store.getState();
   const me = players[localPlayerId] || {};
   
   // Simple stats for the local player only
   return createElement('div', { class: 'player-info' },
-    createElement('div', {}, `You: ${me.nickname || 'Player ' + localPlayerId}`),
-    createElement('div', {}, `Lives: ${me.lives ?? '-'}`),
+    createElement('div', {}, `You: ${me.nickname || me.nick || 'Player ' + localPlayerId}`),
+    createElement('div', {}, `Lives: ${me.lives ?? '3'}`),
     createElement('div', {}, `Bombs: ${me.bombCount ?? '1'}`),
     createElement('div', {}, `Range: ${me.bombRange ?? '1'}`),
     createElement('div', {}, `Speed: ${me.speed ?? '1'}`)
@@ -246,33 +466,6 @@ function PlayerInfo() {
 
 // In-game chat component (optimized to prevent re-renders)
 function GameChat() {
-  // Chat toggle functionality
-  const toggleChat = () => {
-    const panel = document.querySelector('.game-chat-panel');
-    if (panel) {
-      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-    }
-  };
-  
-  // Send chat message
-  const handleChatSubmit = (e) => {
-    e.preventDefault();
-    const input = document.querySelector('#game-chat-input');
-    if (!input) return;
-    
-    const text = input.value.trim();
-    if (!text) return;
-    
-    // Send chat message to server
-    const ws = store.getState().socket;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'chat', text }));
-    }
-    
-    // Clear input
-    input.value = '';
-  };
-  
   return createElement('div', { class: 'game-chat-container' },
     createElement('div', { 
       class: 'game-chat-toggle',
@@ -285,7 +478,7 @@ function GameChat() {
       createElement('div', { class: 'game-chat-messages', id: 'chat-messages' }),
       createElement('form', { 
         class: 'game-chat-form',
-        onsubmit: handleChatSubmit
+        id: 'chat-form'
       },
         createElement('input', { 
           type: 'text', 
@@ -296,6 +489,46 @@ function GameChat() {
       )
     )
   );
+}
+
+// Toggle chat visibility
+function toggleChat() {
+  const panel = document.querySelector('.game-chat-panel');
+  if (panel) {
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    
+    // Focus input when opened
+    if (panel.style.display === 'block') {
+      const input = document.getElementById('game-chat-input');
+      if (input) input.focus();
+    }
+  }
+}
+
+// Process chat form submission
+function setupChatForm() {
+  const form = document.getElementById('chat-form');
+  if (!form) return;
+  
+  // Remove any existing event listeners to prevent duplicates
+  const newForm = form.cloneNode(true);
+  form.parentNode.replaceChild(newForm, form);
+  
+  newForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    
+    const input = document.getElementById('game-chat-input');
+    if (!input) return;
+    
+    const text = input.value.trim();
+    if (!text) return;
+    
+    // Send message to server
+    sendChatMessage(text);
+    
+    // Clear input
+    input.value = '';
+  });
 }
 
 // Update chat messages without triggering re-render
@@ -334,22 +567,27 @@ function updateChatMessages() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// Subscribe to chat updates
-store.subscribe(state => {
-  if (state.gameState === 'playing') {
-    updateChatMessages();
-  }
-});
-
 function GameApp() {
   const { map } = store.getState();
   if (!map.grid.length) generateFallbackMap();
-  return createElement('div', { class: 'game-app' },
+  
+  const app = createElement('div', { class: 'game-app' },
     GameTitle(),
     PlayerInfo(),
     GameChat(),
     GameGrid()
   );
+  
+  // Setup interactions after component is mounted
+  setTimeout(setupInteractions, 100);
+  
+  return app;
+}
+
+// Called after DOM is rendered to set up interactive elements
+function setupInteractions() {
+  setupChatForm();
+  updateChatMessages();
 }
 
 // Movement and input handling
@@ -357,24 +595,34 @@ let moving = false;
 const MOVE_MS = 150;
 
 function handleKeyDown(e) {
+  // Don't handle movement if we're typing in chat
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') {
+    return;
+  }
+  
   if (moving || store.getState().gameState !== 'playing') return;
   const { players, localPlayerId } = store.getState();
   const me = players[localPlayerId];
   if (!me) return;
 
-  let nx = me.x, ny = me.y, nd = me.direction || 'front';
+  let nx = me.x, ny = me.y, nd = me.direction || me.dir || 'front';
   switch (e.key) {
     case 'ArrowUp': ny -= me.speed || 1; nd = 'back'; break;
     case 'ArrowDown': ny += me.speed || 1; nd = 'front'; break;
     case 'ArrowLeft': nx -= me.speed || 1; nd = 'left'; break;
     case 'ArrowRight': nx += me.speed || 1; nd = 'right'; break;
     case ' ': placeBomb(me); return;
+    case 'Escape': toggleChat(); return;
     default: return;
   }
 
   // Update direction if changed
-  if (nd !== me.direction) {
-    players[localPlayerId] = { ...me, direction: nd };
+  if (nd !== me.direction && nd !== me.dir) {
+    players[localPlayerId] = { 
+      ...me, 
+      direction: nd,
+      dir: nd
+    };
     store.setState({ players: { ...players } }, false); // Don't trigger re-render
     updatePlayerSprite(me.id, nd);
     sendPlayerMove(me.x, me.y, nd);
@@ -383,7 +631,13 @@ function handleKeyDown(e) {
   if (!isPassable(nx, ny)) return;
 
   moving = true;
-  players[localPlayerId] = { ...me, x: nx, y: ny, direction: nd };
+  players[localPlayerId] = { 
+    ...me, 
+    x: nx, 
+    y: ny, 
+    direction: nd,
+    dir: nd
+  };
   store.setState({ players: { ...players } }, false); // Don't trigger re-render
   updatePlayerPosition(me.id, nx, ny);
   sendPlayerMove(nx, ny, nd);
@@ -403,6 +657,8 @@ function updatePlayerSprite(id, dir) {
   const el = document.querySelector(`.player[data-player-id="${id}"]`);
   if (el) {
     el.dataset.direction = dir;
+    el.classList.remove('player-direction-front', 'player-direction-back', 'player-direction-left', 'player-direction-right');
+    el.classList.add(`player-direction-${dir}`);
     el.style.backgroundImage = `url('./assets/${dir}.png')`;
   }
 }
@@ -428,17 +684,13 @@ function isValidMove(x, y) {
 function placeBomb(player) {
   const { bombs } = store.getState();
   
-  console.log("Attempting to place bomb for player:", player);
-  
   // Check if player has bombs available
   if (bombs.filter(bomb => bomb.playerId === player.id).length >= player.bombCount) {
-    console.log("Player has reached bomb limit");
     return;
   }
   
   // Check if there's already a bomb at this position
-  if (bombs.some(bomb => bomb.x === player.x && bomb.y === player.y)) {
-    console.log("Bomb already exists at this position");
+  if (bombs.some(bomb => bomb.x === Math.floor(player.x) && bomb.y === Math.floor(player.y))) {
     return;
   }
   
@@ -446,15 +698,13 @@ function placeBomb(player) {
   const newBomb = {
     id: Date.now(),
     playerId: player.id,
-    x: player.x,
-    y: player.y,
+    x: Math.floor(player.x),
+    y: Math.floor(player.y),
     range: player.bombRange || 1,
     timer: 3000,
     countdown: 3,
     stage: 1
   };
-  
-  console.log("Creating new bomb:", newBomb);
   
   // Add to bombs list locally
   store.setState({
@@ -477,8 +727,6 @@ function placeBomb(player) {
 }
 
 function addBombElementToDOM(bomb) {
-  console.log("Adding bomb element to DOM:", bomb);
-  
   const container = document.querySelector('.game-container');
   if (!container) {
     console.error("Game container not found when trying to add bomb!");
@@ -488,7 +736,6 @@ function addBombElementToDOM(bomb) {
   // Check if bomb element already exists to avoid duplicates
   const existingBomb = document.getElementById(`bomb-${bomb.id}`);
   if (existingBomb) {
-    console.log(`Bomb ${bomb.id} already exists in DOM, skipping addition`);
     return;
   }
   
@@ -501,26 +748,18 @@ function addBombElementToDOM(bomb) {
   bombElement.dataset.bombId = bomb.id;
   bombElement.dataset.stage = bomb.stage;
   
-  // Set image path for bomb
-  const bombImagePath = `./assets/bomb${bomb.stage}.png`;
+  // Set image directly - this is cleaner than using a background
+  bombElement.style.backgroundImage = `url('./assets/bomb${bomb.stage}.png')`;
   
-  console.log("Using bomb image path:", bombImagePath);
-  
-  // Set image explicitly with relative path
-  bombElement.style.backgroundImage = `url('${bombImagePath}')`;
-  
-  // Add additional content as fallback
+  // Add text representation of countdown as fallback
   bombElement.textContent = "💣";
   
   container.appendChild(bombElement);
-  console.log("Bomb successfully added to DOM with ID:", bombElement.id);
 }
 
 function startBombCountdown(bomb) {
   let countdown = bomb.countdown;
   let stage = 1;
-  
-  console.log("Starting bomb countdown for bomb ID:", bomb.id);
   
   const countdownInterval = setInterval(() => {
     countdown--;
@@ -532,32 +771,29 @@ function startBombCountdown(bomb) {
     const bombElement = document.getElementById(`bomb-${bomb.id}`);
     
     if (bombElement) {
-      console.log(`Updating bomb ${bomb.id} to stage ${stage}`);
       bombElement.dataset.stage = stage;
       
-      // Use relative path for bomb images
-      const bombImagePath = `./assets/bomb${stage}.png`;
-      
-      // Update background image
-      bombElement.style.backgroundImage = `url('${bombImagePath}')`;
+      // Use direct path for bomb images
+      bombElement.style.backgroundImage = `url('./assets/bomb${stage}.png')`;
       
       // Add text representation of countdown
       bombElement.textContent = `💣${countdown}`;
     } else {
-      console.warn(`Bomb element with ID bomb-${bomb.id} not found during countdown update`);
+      clearInterval(countdownInterval);
     }
     
     if (countdown <= 0 || !document.getElementById(`bomb-${bomb.id}`)) {
-      console.log(`Countdown finished for bomb ${bomb.id}`);
       clearInterval(countdownInterval);
     }
   }, 1000);
 }
 
 function explodeBomb(bomb) {
-  console.log("Exploding bomb:", bomb.id);
-  
   const { bombs, map, explosions, players } = store.getState();
+  
+  // Skip if the bomb is no longer in state (already exploded)
+  if (!bombs.some(b => b.id === bomb.id)) return;
+  
   const { grid } = map;
   
   // Remove this bomb from the bombs array
@@ -622,6 +858,12 @@ function explodeBomb(bomb) {
         // Update the cell visually
         updateCellType(newX, newY, 'empty');
         
+        // Synchronize block destruction with other players
+        // Only the bomb owner should send the broadcast
+        if (bomb.playerId === store.getState().localPlayerId) {
+          sendBlockDestroyed(newX, newY);
+        }
+        
         break; // Stop in this direction after hitting a block
       }
       
@@ -645,9 +887,6 @@ function explodeBomb(bomb) {
   const bombElement = document.getElementById(`bomb-${bomb.id}`);
   if (bombElement) {
     bombElement.remove();
-    console.log("Removed bomb element from DOM");
-  } else {
-    console.warn(`Bomb element with ID bomb-${bomb.id} not found when trying to remove`);
   }
   
   // Add explosion effects to DOM
@@ -664,12 +903,27 @@ function explodeBomb(bomb) {
     explosions: allExplosions
   }, false); // Don't trigger re-render
   
-  // Spawn power-ups from destroyed blocks (approximately 30% chance)
-  destroyedBlocks.forEach(block => {
-    if (Math.random() < 0.4) { // Increased chance for testing
-      spawnPowerUp(block.x, block.y);
-    }
-  });
+  // Spawn power-ups from destroyed blocks - but only if this is the bomb owner
+  if (bomb.playerId === store.getState().localPlayerId) {
+    destroyedBlocks.forEach(block => {
+      if (Math.random() < 0.4) {
+        // Generate a deterministic powerup ID based on block position and time
+        const powerupId = `pu-${block.x}-${block.y}-${Date.now()}`;
+        const powerUpTypes = ['bomb', 'flame', 'speed'];
+        const type = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
+        
+        const newPowerUp = {
+          id: powerupId,
+          x: block.x,
+          y: block.y,
+          type
+        };
+        
+        // Send to server first - let server handle synchronizing
+        sendPowerupSpawned(newPowerUp);
+      }
+    });
+  }
   
   // Clean up explosions after animation
   setTimeout(() => {
@@ -697,28 +951,6 @@ function updateCellType(x, y, newType) {
   }
 }
 
-function spawnPowerUp(x, y) {
-  const { powerups } = store.getState();
-  
-  // Determine which power-up to spawn
-  const powerUpTypes = ['bomb', 'flame', 'speed'];
-  const type = powerUpTypes[Math.floor(Math.random() * powerUpTypes.length)];
-  
-  const newPowerUp = {
-    id: Date.now(),
-    x,
-    y,
-    type
-  };
-  
-  // Add to state
-  store.setState({
-    powerups: [...powerups, newPowerUp]
-  }, false); // Don't trigger re-render
-  
-  addPowerUpToDOM(newPowerUp);
-}
-
 function addPowerUpToDOM(powerUp) {
   const container = document.querySelector('.game-container');
   if (!container) {
@@ -729,7 +961,6 @@ function addPowerUpToDOM(powerUp) {
   // Check if power-up already exists
   const existingPowerUp = document.querySelector(`.powerup[data-powerup-id="${powerUp.id}"]`);
   if (existingPowerUp) {
-    console.log(`Power-up ${powerUp.id} already exists in DOM, skipping addition`);
     return;
   }
   
@@ -737,8 +968,8 @@ function addPowerUpToDOM(powerUp) {
   powerUpElement.className = `powerup powerup-${powerUp.type}`;
   
   // Center the power-up in the cell
-  powerUpElement.style.left = `${powerUp.x * CELL + CELL / 2}px`;
-  powerUpElement.style.top = `${powerUp.y * CELL + CELL / 2}px`;
+  powerUpElement.style.left = `${powerUp.x * CELL}px`;
+  powerUpElement.style.top = `${powerUp.y * CELL}px`;
   powerUpElement.dataset.powerupId = powerUp.id;
   
   let powerupImageUrl = '';
@@ -754,11 +985,10 @@ function addPowerUpToDOM(powerUp) {
       break;
   }
   
-  console.log("Setting power-up image:", powerupImageUrl);
+  // Set image directly
   powerUpElement.style.backgroundImage = `url('${powerupImageUrl}')`;
   
   container.appendChild(powerUpElement);
-  console.log("Power-up added to DOM:", powerUp.type);
 }
 
 function addExplosionToDOM(explosion) {
@@ -767,7 +997,6 @@ function addExplosionToDOM(explosion) {
     // Check if explosion already exists at this position
     const existingExplosion = container.querySelector(`.explosion[data-x="${explosion.x}"][data-y="${explosion.y}"]`);
     if (existingExplosion) {
-      console.log(`Explosion at (${explosion.x}, ${explosion.y}) already exists, skipping`);
       return;
     }
     
@@ -855,7 +1084,7 @@ function checkPlayersInExplosion(explosions) {
           const winnerId = Object.keys(updatedPlayers)[0];
           const winner = updatedPlayers[winnerId];
           setTimeout(() => {
-            alert(`Game Over! ${winner.nickname || 'Player ' + winnerId} wins!`);
+            alert(`Game Over! ${winner.nickname || winner.nick || 'Player ' + winnerId} wins!`);
           }, 200);
         }
       }
@@ -899,93 +1128,81 @@ function checkPowerUpCollection() {
   const { players, powerups, localPlayerId } = store.getState();
   if (!players || !powerups.length) return;
   
-  // Make a copy of powerups to track which ones to remove
-  let updatedPowerups = [...powerups];
-  let powerupsRemoved = false;
+  // Only check for the local player to avoid sync issues
+  const me = players[localPlayerId];
+  if (!me) return;
   
-  // Check each player against each powerup
-  Object.values(players).forEach(player => {
-    const collectedPowerups = powerups.filter(
-      powerup => Math.floor(player.x) === powerup.x && Math.floor(player.y) === powerup.y
-    );
+  // Find powerups the local player is touching
+  const collectedPowerups = powerups.filter(
+    powerup => Math.floor(me.x) === powerup.x && Math.floor(me.y) === powerup.y
+  );
+  
+  if (collectedPowerups.length) {
+    // Apply effects to local player
+    let updatedPlayer = { ...me };
     
-    if (collectedPowerups.length) {
-      // Apply the powerup effects to this player
-      let updatedPlayer = { ...player };
-      
-      collectedPowerups.forEach(powerup => {
-        // Apply effect based on powerup type
-        switch (powerup.type) {
-          case 'bomb':
-            updatedPlayer.bombCount = (updatedPlayer.bombCount || 1) + 1;
-            break;
-          case 'flame':
-            updatedPlayer.bombRange = (updatedPlayer.bombRange || 1) + 1;
-            break;
-          case 'speed':
-            updatedPlayer.speed = (updatedPlayer.speed || 1) + 0.5;
-            break;
-        }
-        
-        // Remove from DOM
-        const powerupElement = document.querySelector(`.powerup[data-powerup-id="${powerup.id}"]`);
-        if (powerupElement) {
-          powerupElement.remove();
-        }
-        
-        // Track that we need to update state
-        powerupsRemoved = true;
-      });
-      
-      // Update this player in the state
-      const updatedPlayers = { ...players };
-      updatedPlayers[player.id] = updatedPlayer;
-      store.setState({ players: updatedPlayers }, false); // Don't trigger re-render
-      
-      // If the local player collected a powerup, update the UI
-      if (player.id === localPlayerId) {
-        updatePlayerInfoUI();
+    collectedPowerups.forEach(powerup => {
+      // Apply effect based on powerup type
+      switch (powerup.type) {
+        case 'bomb':
+          updatedPlayer.bombCount = (updatedPlayer.bombCount || 1) + 1;
+          break;
+        case 'flame':
+          updatedPlayer.bombRange = (updatedPlayer.bombRange || 1) + 1;
+          break;
+        case 'speed':
+          updatedPlayer.speed = (updatedPlayer.speed || 1) + 0.5;
+          break;
       }
       
-      // Filter out collected powerups
-      updatedPowerups = updatedPowerups.filter(
-        powerup => !collectedPowerups.some(collected => collected.id === powerup.id)
-      );
-    }
-  });
-  
-  // Update powerups state if any were collected
-  if (powerupsRemoved) {
-    store.setState({ powerups: updatedPowerups }, false); // Don't trigger re-render
+      // Notify server about collection
+      sendPowerupCollected(powerup.id, {
+        bombCount: updatedPlayer.bombCount,
+        bombRange: updatedPlayer.bombRange,
+        speed: updatedPlayer.speed
+      });
+      
+      // No need to remove from DOM or state - server will broadcast
+    });
   }
 }
 
 // Game loop for continuous updates
 function gameLoop() {
-  checkPowerUpCollection();
+  if (store.getState().gameState === 'playing') {
+    checkPowerUpCollection();
+  }
   requestAnimationFrame(gameLoop);
 }
 
 // Setup keyboard controls for player input
 function setupKeyboardControls() {
-  document.addEventListener('keydown', handleKeyDown, { passive: true });
+  document.addEventListener('keydown', handleKeyDown);
 }
 
 // Initialize the game
 setupKeyboardControls();
 requestAnimationFrame(gameLoop);
 
+// When the document is ready, check if we're in game state
+document.addEventListener('DOMContentLoaded', () => {
+  if (store.getState().gameState === 'playing') {
+    setupInteractions();
+  }
+});
+
 // Add this to your state store to prevent unnecessary re-renders
 if (typeof store.setState !== 'function' || store.setState.length === 1) {
   const originalSetState = store.setState;
   store.setState = function(newState, shouldNotify = true) {
-    let result = originalSetState.call(this, newState);
-    if (!shouldNotify) {
-      // Skip notification to prevent re-renders
-      return result;
+    // Call original setState but don't notify yet
+    originalSetState.call(this, newState);
+    
+    // Only notify if shouldNotify is true
+    if (shouldNotify) {
+      this.notify();
     }
     
-    this.notify();
-    return result;
+    return this.state;
   };
 }

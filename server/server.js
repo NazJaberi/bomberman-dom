@@ -9,6 +9,11 @@ const sockets = new Map();                // socket -> { id, nick }
 const players = new Map();                // id     -> { x,y,dir,lives }
 let nextId = 1;
 
+// Store game state
+const gameState = {
+  powerups: new Map(),  // id -> {id, x, y, type}
+};
+
 /* lobby timers (unchanged from milestone 2)  */
 let phase = 'waiting'; // waiting | fill | ready | playing
 let fillR = 0, readyR = 0, fillI = null, readyI = null;
@@ -26,6 +31,12 @@ const enc = s => {
 const sendAll = (type,payload)=> {
   const f = enc(JSON.stringify({type,payload}));
   for(const s of sockets.keys()) s.write(f);
+};
+const sendExcept = (socket, type, payload) => {
+  const f = enc(JSON.stringify({type,payload}));
+  for(const s of sockets.keys()) {
+    if (s !== socket) s.write(f);
+  }
 };
 const lobbyUpdate = () =>
   sendAll('lobbyUpdate',[...sockets.values()]);
@@ -68,6 +79,8 @@ function beginGame(){
   phase='playing';
   mapSeed = Date.now() & 0xffffffff;
   players.clear();
+  gameState.powerups.clear();
+  
   for(const {id} of sockets.values()){
     const p = generateSpawnPos(id);
     players.set(id,{...p,dir:'front',lives:3});
@@ -130,22 +143,138 @@ Sec-WebSocket-Accept: ${accept}\r
         const {x,y,dir}=msg;
         /* very naïve validation: within map bounds */
         if(x<0||y<0||x>=MAP_SIZE||y>=MAP_SIZE) continue;
-        players.set(id,{x,y,dir,lives:pData.lives});
+        players.set(id,{...pData, x, y, dir});
         sendAll('playerMove',{id,x,y,dir});
+      }
+      
+      if(phase==='playing' && msg.type==='bomb'){
+        // Relay bomb placement to all clients except sender
+        sendExcept(s, 'bombPlaced', {
+          id: msg.bomb.id,
+          playerId: id,
+          x: msg.bomb.x,
+          y: msg.bomb.y,
+          range: msg.bomb.range,
+          timer: msg.bomb.timer,
+          countdown: msg.bomb.countdown,
+          stage: msg.bomb.stage
+        });
+      }
+      
+      if(phase==='playing' && msg.type==='blockDestroyed'){
+        // Relay block destruction to everyone except sender
+        sendExcept(s, 'blockDestroyed', {
+          x: msg.x,
+          y: msg.y
+        });
+      }
+      
+      if(phase==='playing' && msg.type==='powerupSpawned'){
+        // Store powerup in game state
+        gameState.powerups.set(msg.id, {
+          id: msg.id,
+          x: msg.x,
+          y: msg.y,
+          type: msg.type
+        });
+        
+        // Relay powerup to everyone including sender (for consistency)
+        sendAll('powerupSpawned', {
+          id: msg.id,
+          x: msg.x,
+          y: msg.y,
+          type: msg.type
+        });
+      }
+      
+      if(phase==='playing' && msg.type==='powerupCollected'){
+        const playerData = players.get(id);
+        if (!playerData) continue;
+        
+        // Check if powerup exists
+        if (gameState.powerups.has(msg.powerupId)) {
+          const powerup = gameState.powerups.get(msg.powerupId);
+          
+          // Apply powerup effect to player
+          switch (powerup.type) {
+            case 'bomb':
+              playerData.bombCount = (playerData.bombCount || 1) + 1;
+              break;
+            case 'flame':
+              playerData.bombRange = (playerData.bombRange || 1) + 1;
+              break;
+            case 'speed':
+              playerData.speed = (playerData.speed || 1) + 0.5;
+              break;
+          }
+          
+          // Update player data
+          players.set(id, playerData);
+          
+          // Remove powerup from game state
+          gameState.powerups.delete(msg.powerupId);
+          
+          // Broadcast to all players
+          sendAll('powerupCollected', {
+            powerupId: msg.powerupId,
+            playerId: id,
+            newStats: {
+              bombCount: playerData.bombCount || 1,
+              bombRange: playerData.bombRange || 1,
+              speed: playerData.speed || 1
+            }
+          });
+        }
+      }
+      
+      if(phase==='playing' && msg.type==='hit'){
+        // Update player lives
+        const pData = players.get(id);
+        if (pData) {
+          // Update lives
+          pData.lives = msg.lives;
+          players.set(id, pData);
+          
+          // Broadcast hit to everyone
+          sendAll('playerHit', {
+            id: id,
+            lives: msg.lives
+          });
+          
+          // Check if player is dead
+          if (msg.lives <= 0) {
+            players.delete(id);
+            
+            // Check if only one player remains
+            if (players.size === 1) {
+              const winnerId = [...players.keys()][0];
+              const winnerNick = [...sockets.values()].find(p => p.id === winnerId)?.nick || 'Unknown';
+              
+              // Declare winner
+              sendAll('gameOver', {
+                winner: winnerNick
+              });
+              
+              // Reset game state
+              phase = 'waiting';
+              mapSeed = null;
+            }
+          }
+        }
       }
     }
   });
 
-  s.on('close',()=>{
-    sockets.delete(s); players.delete(id);
-    lobbyUpdate();
-    if(sockets.size<2){fillI&&clearInterval(fillI);readyI&&clearInterval(readyI);phase='waiting';lobbyState();}
-  });
-  s.on('error',()=>s.destroy());
-});
-
-s.on('close', () => {
-    sockets.delete(s); players.delete(id);
+  s.on('close', () => {
+    const playerData = sockets.get(s);
+    sockets.delete(s);
+    players.delete(id);
+    
+    // Notify all remaining clients that a player has left
+    if (playerData) {
+      sendAll('playerLeft', { id: playerData.id });
+    }
+    
     lobbyUpdate();
     
     // Check if game is in progress and only one player remains
@@ -167,5 +296,8 @@ s.on('close', () => {
       lobbyState();
     }
   });
+  
+  s.on('error',()=>s.destroy());
+});
 
 server.listen(PORT,()=>console.log('🟢 WS server on ws://localhost:'+PORT));

@@ -1,22 +1,80 @@
 import { createElement, store } from '../../src/index.js';
-import { Chat } from './Chat.js';
 
 export function Lobby() {
-  const { lobby, lobbyState = {} } = store.getState();
-  const players = lobby.players || [];
-  const { phase = 'waiting', fillRemaining = 0, readyRemaining = 0 } = lobbyState;
+  const {
+    nickname,
+    lobby: { players },
+    lobbyState: { phase = 'waiting', fillR = 0, readyR = 0 } = {},
+    chatMessages = [],
+    chatDraft = ''
+  } = store.getState();
 
-  let phaseText = 'Waiting for players…';
-  if (phase === 'fill')   phaseText = `Fill timer: ${fillRemaining}s`;
-  if (phase === 'ready')  phaseText = `Game starts in ${readyRemaining}s`;
+  // Fix for the chat issue - save complete draft without removing last letter
+  const saveDraft = newDraft => {
+    store.setState({ chatDraft: newDraft });
+  };
 
-  return createElement('div', { class: 'lobby-screen' },
-    createElement('h2', {}, 'Bomberman DOM – Lobby'),
-    createElement('p', {}, `Players: ${players.length} / 4`),
-    createElement('p', { class: 'lobby-phase' }, phaseText),
-    createElement('ul', {},
-      players.map(p => createElement('li', { key: p.id }, p.nick || '???'))
+  const sendChat = e => {
+    e.preventDefault();
+    const { socket, chatDraft } = store.getState();
+    if (!chatDraft.trim()) return;
+
+    socket.send(JSON.stringify({ type: 'chat', text: chatDraft }));
+    saveDraft('');
+  };
+
+  return createElement(
+    'div',
+    { class: 'lobby-screen' },
+    createElement('h1', {}, 'Lobby'),
+    createElement(
+      'p',
+      {},
+      `Hello, ${nickname}! Wait for more players to join...`
     ),
-    Chat()
+    createElement(
+      'ul',
+      {},
+      ...players.map(p =>
+        createElement('li', {}, `${p.nick}${p.id === store.getState().socketId ? ' (you)' : ''}`)
+      )
+    ),
+    createElement(
+      'div',
+      { class: 'lobby-phase' },
+      phase === 'waiting'
+        ? 'Waiting for players…'
+        : phase === 'fill'
+        ? `Game starting in ${fillR}s (joining phase)`
+        : phase === 'ready'
+        ? `Game starting in ${readyR}s (ready phase)`
+        : ''
+    ),
+    createElement(
+      'div',
+      { class: 'chat-box' },
+      createElement(
+        'div',
+        { class: 'chat-log' },
+        ...chatMessages.map(m =>
+          createElement(
+            'div',
+            { class: 'chat-line' },
+            createElement('span', { class: 'chat-nick' }, `${m.nick}: `),
+            `${m.text}`
+          )
+        )
+      ),
+      createElement(
+        'form',
+        { class: 'chat-form', onsubmit: sendChat },
+        createElement('input', {
+          type: 'text',
+          placeholder: 'chat message…',
+          value: chatDraft,
+          oninput: e => saveDraft(e.target.value)
+        })
+      )
+    )
   );
 }

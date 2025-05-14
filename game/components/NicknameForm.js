@@ -13,7 +13,7 @@ export function NicknameForm() {
     /* remember nickname & switch to lobby UI */
     store.setState({ nickname: nick, gameState: 'lobby' });
 
-    /* send “join” when socket is ready */
+    /* send "join" when socket is ready */
     const ws = store.getState().socket;
     const sendJoin = () => ws.send(JSON.stringify({ type: 'join', nick }));
     ws.readyState === WebSocket.OPEN

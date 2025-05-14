@@ -81,11 +81,21 @@ function beginGame(){
   players.clear();
   gameState.powerups.clear();
   
-  for(const {id} of sockets.values()){
+  for(const {id, nick} of sockets.values()){
     const p = generateSpawnPos(id);
-    players.set(id,{...p,dir:'front',lives:3});
+    players.set(id,{...p, dir:'front', lives:3, nickname: nick});
   }
+  
+  // First, send the game start payload with players including nicknames
   sendAll('gameStart',{seed:mapSeed,players:[...players.entries()]});
+  
+  // Then broadcast each player's nickname individually to ensure it's received
+  for(const {id, nick} of sockets.values()){
+    if (nick) {
+      sendAll('nicknameUpdate', { id, nickname: nick });
+    }
+  }
+  
   lobbyState();
 }
 
@@ -129,18 +139,31 @@ Sec-WebSocket-Accept: ${accept}\r
 
       /*  messages  */
       if(msg.type==='join'){
-        sockets.get(s).nick=String(msg.nick).slice(0,20);
+        const nickname = String(msg.nick).slice(0,20);
+        sockets.get(s).nick = nickname;
+        
+        // When a player joins, broadcast their nickname to everyone
+        sendAll('nicknameUpdate', { id, nickname });
+        
         lobbyUpdate();
         if(sockets.size>=2 && phase==='waiting') startFill();
       }
 
       if(msg.type==='chat'){
-        sendAll('chat',{id,nick:sockets.get(s).nick,text:msg.text});
+        const nick = sockets.get(s).nick;
+        if (nick) {
+          const chatPayload = {id, nick, text: String(msg.text || "").slice(0, 200)};
+          sendAll('chat', chatPayload);
+        }
       }
 
       if(phase==='playing' && msg.type==='move'){
         const pData = players.get(id); if(!pData) continue;
         const {x,y,dir}=msg;
+        
+        // Check if player is still alive
+        if (pData.lives <= 0) continue; // Dead players can't move
+        
         /* very naïve validation: within map bounds */
         if(x<0||y<0||x>=MAP_SIZE||y>=MAP_SIZE) continue;
         players.set(id,{...pData, x, y, dir});
@@ -148,16 +171,26 @@ Sec-WebSocket-Accept: ${accept}\r
       }
       
       if(phase==='playing' && msg.type==='bomb'){
+        // Check if player is still alive
+        const pData = players.get(id);
+        if (!pData || pData.lives <= 0) continue; // Dead players can't place bombs
+        
+        // Fix for the TypeError: Guard against undefined bomb object
+        if (!msg.bomb) {
+          console.error(`Received invalid bomb data from player ${id}`);
+          continue;
+        }
+        
         // Relay bomb placement to all clients except sender
         sendExcept(s, 'bombPlaced', {
-          id: msg.bomb.id,
+          id: msg.bomb.id || Date.now(), // Fallback if id is missing
           playerId: id,
-          x: msg.bomb.x,
-          y: msg.bomb.y,
-          range: msg.bomb.range,
-          timer: msg.bomb.timer,
-          countdown: msg.bomb.countdown,
-          stage: msg.bomb.stage
+          x: msg.bomb.x || 0,
+          y: msg.bomb.y || 0,
+          range: msg.bomb.range || 1,
+          timer: msg.bomb.timer || 3000,
+          countdown: msg.bomb.countdown || 3,
+          stage: msg.bomb.stage || 1
         });
       }
       
@@ -171,25 +204,26 @@ Sec-WebSocket-Accept: ${accept}\r
       
       if(phase==='playing' && msg.type==='powerupSpawned'){
         // Store powerup in game state
-        gameState.powerups.set(msg.id, {
-          id: msg.id,
-          x: msg.x,
-          y: msg.y,
-          type: msg.type
+        const powerupId = msg.id || `pu-${Date.now()}`;
+        gameState.powerups.set(powerupId, {
+          id: powerupId,
+          x: msg.x || 0,
+          y: msg.y || 0,
+          type: msg.type || 'bomb'
         });
         
         // Relay powerup to everyone including sender (for consistency)
         sendAll('powerupSpawned', {
-          id: msg.id,
-          x: msg.x,
-          y: msg.y,
-          type: msg.type
+          id: powerupId,
+          x: msg.x || 0,
+          y: msg.y || 0,
+          type: msg.type || 'bomb'
         });
       }
       
       if(phase==='playing' && msg.type==='powerupCollected'){
         const playerData = players.get(id);
-        if (!playerData) continue;
+        if (!playerData || playerData.lives <= 0) continue; // Dead players can't collect powerups
         
         // Check if powerup exists
         if (gameState.powerups.has(msg.powerupId)) {
@@ -243,11 +277,11 @@ Sec-WebSocket-Accept: ${accept}\r
           
           // Check if player is dead
           if (msg.lives <= 0) {
-            players.delete(id);
+            // Check if only one player remains alive
+            const alivePlayers = [...players.entries()].filter(([_, p]) => p.lives > 0);
             
-            // Check if only one player remains
-            if (players.size === 1) {
-              const winnerId = [...players.keys()][0];
+            if (alivePlayers.length === 1) {
+              const winnerId = alivePlayers[0][0];
               const winnerNick = [...sockets.values()].find(p => p.id === winnerId)?.nick || 'Unknown';
               
               // Declare winner
@@ -278,15 +312,20 @@ Sec-WebSocket-Accept: ${accept}\r
     lobbyUpdate();
     
     // Check if game is in progress and only one player remains
-    if (phase === 'playing' && players.size === 1) {
-      // Game over - we have a winner
-      const winnerId = [...players.keys()][0];
-      const winnerNick = [...sockets.values()].find(p => p.id === winnerId)?.nick || 'Unknown';
-      sendAll('gameOver', { winner: winnerNick });
+    if (phase === 'playing') {
+      const alivePlayers = [...players.entries()].filter(([_, p]) => p.lives > 0);
       
-      // Reset game state
-      phase = 'waiting';
-      mapSeed = null;
+      if (alivePlayers.length === 1) {
+        // Game over - we have a winner
+        const winnerId = alivePlayers[0][0];
+        const winnerNick = [...sockets.values()].find(p => p.id === winnerId)?.nick || 'Unknown';
+        
+        sendAll('gameOver', { winner: winnerNick });
+        
+        // Reset game state
+        phase = 'waiting';
+        mapSeed = null;
+      }
     }
     
     if (sockets.size < 2) {

@@ -1,25 +1,22 @@
 import { createElement, store } from '../../src/index.js';
+import { Chat } from './Chat.js';
 
-setInterval(() => {
-  const { lobbyState } = store.getState();
-  if (!lobbyState?.timeLeft) return;
-  store.setState({ lobbyState: { ...lobbyState, timeLeft: lobbyState.timeLeft - 1 } });
-}, 1000);
+export function Lobby() {
+  const { lobby, lobbyState = {} } = store.getState();
+  const players = lobby.players || [];
+  const { phase = 'waiting', fillRemaining = 0, readyRemaining = 0 } = lobbyState;
 
-export function Lobby () {
-  const { lobby, lobbyState } = store.getState();
-  const players     = lobby.players || [];
-  const slotsFilled = players.length;
-  const slotsNeeded = lobbyState?.required ?? 2;
-  const secs        = lobbyState?.timeLeft ?? '-';
+  let phaseText = 'Waiting for players…';
+  if (phase === 'fill')   phaseText = `Fill timer: ${fillRemaining}s`;
+  if (phase === 'ready')  phaseText = `Game starts in ${readyRemaining}s`;
 
-  return createElement(
-    'div',
-    { class:'lobby' },
-    createElement('h2', {}, `Waiting room – ${slotsFilled}/${slotsNeeded}`),
-    createElement('p',  {}, `Starting in ${secs}s`),
+  return createElement('div', { class: 'lobby-screen' },
+    createElement('h2', {}, 'Bomberman DOM – Lobby'),
+    createElement('p', {}, `Players: ${players.length} / 4`),
+    createElement('p', { class: 'lobby-phase' }, phaseText),
     createElement('ul', {},
-      ...players.map(p => createElement('li', {}, p.nick))
-    )
+      players.map(p => createElement('li', { key: p.id }, p.nick || '???'))
+    ),
+    Chat()
   );
 }

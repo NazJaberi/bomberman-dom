@@ -144,4 +144,28 @@ Sec-WebSocket-Accept: ${accept}\r
   s.on('error',()=>s.destroy());
 });
 
+s.on('close', () => {
+    sockets.delete(s); players.delete(id);
+    lobbyUpdate();
+    
+    // Check if game is in progress and only one player remains
+    if (phase === 'playing' && players.size === 1) {
+      // Game over - we have a winner
+      const winnerId = [...players.keys()][0];
+      const winnerNick = [...sockets.values()].find(p => p.id === winnerId)?.nick || 'Unknown';
+      sendAll('gameOver', { winner: winnerNick });
+      
+      // Reset game state
+      phase = 'waiting';
+      mapSeed = null;
+    }
+    
+    if (sockets.size < 2) {
+      fillI && clearInterval(fillI);
+      readyI && clearInterval(readyI);
+      phase = 'waiting';
+      lobbyState();
+    }
+  });
+
 server.listen(PORT,()=>console.log('🟢 WS server on ws://localhost:'+PORT));

@@ -5,28 +5,31 @@ import { generateGrid } from './map.js';
 
 // Initial state setup
 store.setState({
-  gameState: 'init', // init | lobby | playing | gameOver
+  gameState: 'init', // Possible states: init, lobby, playing, gameOver
   nickname: null,
   nicknameDraft: '',
 
-  // Lobby
+  // Lobby-related state
   lobby: { players: [] },
   lobbyState: {},
   chatMessages: [],
   chatDraft: '',
 
-  // Network
+  // Network-related state
   socket: null,
-  socketId: null,
+  socketId: null, // Numeric ID from server
   localPlayerId: null,
 
-  // World
+  // Game world state
   mapSeed: null,
   map: { size: 15, grid: [] },
-  players: {}, // id -> player object
+  players: {}, // id -> {x, y, dir, lives}
   bombs: [],
   powerups: [],
-  explosions: []
+  explosions: [],
+  
+  // Flag to prevent excessive re-renders
+  lastRender: 0,
 });
 
 // WebSocket connection setup
@@ -38,64 +41,56 @@ function connectWS() {
   ws.addEventListener('message', evt => {
     const { type, payload } = JSON.parse(evt.data);
 
-    // lobby list
+    // Handle lobby updates
     if (type === 'lobbyUpdate') {
       store.setState({ lobby: { players: payload } });
       const me = payload.find(p => p.nick === store.getState().nickname);
-      if (me && !store.getState().socketId)
+      if (me && !store.getState().socketId) {
         store.setState({ socketId: me.id, localPlayerId: me.id });
+      }
     }
-
-    // lobby timers (fill / ready)
     if (type === 'lobbyState')
       store.setState({ lobbyState: payload });
 
-    // chat line
     if (type === 'chat') {
       const { chatMessages } = store.getState();
       store.setState({ chatMessages: [...chatMessages, payload] });
     }
 
-    // game starts
+    // Handle game start
     if (type === 'gameStart') {
       const { seed, players } = payload;
-
-      // enrich every player with defaults the server does not send
-      const defaults = {
-        bombCount: 1,
-        bombRange: 1,
-        speed: 1,
-        direction: 'front'
-      };
-      const playersObj = {};
-      players.forEach(([id, data]) => {
-        playersObj[id] = { id: +id, ...defaults, ...data };
-      });
-
+      const obj = {};
+      players.forEach(([id, data]) => (obj[id] = { ...data, id: +id }));
       store.setState({
         gameState: 'playing',
         mapSeed: seed,
         map: { size: 15, grid: generateGrid(15, seed) },
-        players: playersObj
+        players: obj
       });
-
-      // attach keyboard *once*, now that the map exists
-      if (!window.__kbAttached) {
-        setupKeyboardControls();
-        window.__kbAttached = true;
-      }
     }
 
-    // movement from somebody else
+    // Handle player movement
     if (type === 'playerMove') {
       const { players } = store.getState();
-      players[payload.id] = { ...players[payload.id], ...payload };
-      store.setState({ players: { ...players } });
+      if (players[payload.id]) {
+        // Don't apply movement update to local player - prevents teleporting
+        if (payload.id == store.getState().localPlayerId) return;
+        
+        players[payload.id] = { ...players[payload.id], ...payload };
+        
+        // Update DOM directly instead of triggering full re-render
+        updatePlayerPosition(payload.id, payload.x, payload.y);
+        updatePlayerSprite(payload.id, payload.dir);
+        
+        // Update state without triggering full re-render
+        store.setState({ players: { ...players } }, false);
+      }
     }
   });
 
   ws.addEventListener('close', () => {
-    console.warn('WS closed – reconnecting in 3 s');
+    console.warn('WS closed -- reconnecting in 3 seconds');
     setTimeout(connectWS, 3000);
   });
 
@@ -103,7 +98,7 @@ function connectWS() {
 }
 connectWS();
 
-// helpers to talk to server
+// Helper functions to communicate with the server
 function sendPlayerMove(x, y, dir) {
   const ws = store.getState().socket;
   if (ws?.readyState === WebSocket.OPEN)
@@ -131,13 +126,22 @@ function Root() {
 
 // Mount the application
 const app = createApp('#app');
-store.subscribe(() => app.mount(Root));
+store.subscribe(() => {
+  // Prevent excessive re-renders by throttling
+  const now = Date.now();
+  const { lastRender } = store.getState();
+  
+  if (now - lastRender > 100) { // Only re-render at most 10 times per second
+    app.mount(Root);
+    store.setState({ lastRender: now }, false); // Update without triggering another re-render
+  }
+});
 app.mount(Root);
 
-// Rendering & input
+// Game rendering and input handling
 const CELL = 40;
 
-// fallback map for local preview
+// Fallback map generation for local preview
 function generateFallbackMap() {
   const size = 15, grid = [];
   for (let y = 0; y < size; y++) {
@@ -146,7 +150,10 @@ function generateFallbackMap() {
       let t = 'empty';
       if (x % 2 === 0 && y % 2 === 0) t = 'wall';
       else if (Math.random() < 0.3 &&
-        !((x < 2 && y < 2) || (x < 2 && y > size - 3) || (x > size - 3 && y < 2) || (x > size - 3 && y > size - 3)))
+        !((x < 2 && y < 2) ||
+          (x < 2 && y > size - 3) ||
+          (x > size - 3 && y < 2) ||
+          (x > size - 3 && y > size - 3)))
         t = 'block';
       row.push({ x, y, type: t });
     }
@@ -156,7 +163,7 @@ function generateFallbackMap() {
   store.setState({ map: { size, grid } });
 }
 
-// create DOM nodes for players
+// DOM helper to render players
 function renderPlayers() {
   return Object.values(store.getState().players).map(p => {
     const el = document.createElement('div');
@@ -167,12 +174,27 @@ function renderPlayers() {
     el.style.left = `${p.x * CELL}px`;
     el.style.top = `${p.y * CELL}px`;
     el.classList.add(`player-direction-${dir}`);
-    setTimeout(() => { el.style.backgroundImage = `url('./assets/${dir}.png')`; }, 0);
+    
+    // Add a label with player name
+    const nameLabel = document.createElement('div');
+    nameLabel.className = 'player-name-label';
+    nameLabel.textContent = p.nickname || `Player ${p.id}`;
+    
+    // Mark local player
+    if (p.id == store.getState().localPlayerId) {
+      el.classList.add('local-player');
+    }
+    
+    el.appendChild(nameLabel);
+    
+    setTimeout(() => {
+      el.style.backgroundImage = `url('./assets/${dir}.png')`;
+    }, 0);
     return el;
   });
 }
 
-// UI components
+// Game UI components
 function GameTitle() {
   return createElement('h1', { class: 'game-title' }, 'Bomberman DOM');
 }
@@ -180,10 +202,16 @@ function GameGrid() {
   const { map, bombs, powerups, explosions } = store.getState();
   const gridEl = createElement('div', { class: 'game-grid' },
     ...map.grid.flat().map(c =>
-      createElement('div', { class: `cell cell-${c.type}`, 'data-x': c.x, 'data-y': c.y, 'data-cell-type': c.type })
+      createElement('div', {
+        class: `cell cell-${c.type}`,
+        'data-x': c.x,
+        'data-y': c.y,
+        'data-cell-type': c.type
+      })
     ));
   const container = createElement('div', { class: 'game-container' }, gridEl);
 
+  // Mount dynamic elements after initial paint
   setTimeout(() => {
     const cont = document.querySelector('.game-container');
     if (!cont) return;
@@ -194,7 +222,7 @@ function GameGrid() {
         t === 'block' ? "url('./assets/block.png')" :
         "url('./assets/floor.png')";
     });
-    cont.querySelectorAll('.player,.bomb,.powerup,.explosion').forEach(el => el.remove());
+    cont.querySelectorAll('.player, .bomb, .powerup, .explosion').forEach(el => el.remove());
     renderPlayers().forEach(p => cont.appendChild(p));
     bombs.forEach(addBombElementToDOM);
     powerups.forEach(addPowerUpToDOM);
@@ -205,48 +233,149 @@ function GameGrid() {
 function PlayerInfo() {
   const { players, localPlayerId } = store.getState();
   const me = players[localPlayerId] || {};
+  
+  // Simple stats for the local player only
   return createElement('div', { class: 'player-info' },
+    createElement('div', {}, `You: ${me.nickname || 'Player ' + localPlayerId}`),
     createElement('div', {}, `Lives: ${me.lives ?? '-'}`),
-    createElement('div', {}, `Bombs: ${me.bombCount ?? '-'}`),
-    createElement('div', {}, `Range: ${me.bombRange ?? '-'}`),
-    createElement('div', {}, `Speed: ${me.speed ?? '-'}`)
+    createElement('div', {}, `Bombs: ${me.bombCount ?? '1'}`),
+    createElement('div', {}, `Range: ${me.bombRange ?? '1'}`),
+    createElement('div', {}, `Speed: ${me.speed ?? '1'}`)
   );
 }
+
+// In-game chat component (optimized to prevent re-renders)
+function GameChat() {
+  // Chat toggle functionality
+  const toggleChat = () => {
+    const panel = document.querySelector('.game-chat-panel');
+    if (panel) {
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    }
+  };
+  
+  // Send chat message
+  const handleChatSubmit = (e) => {
+    e.preventDefault();
+    const input = document.querySelector('#game-chat-input');
+    if (!input) return;
+    
+    const text = input.value.trim();
+    if (!text) return;
+    
+    // Send chat message to server
+    const ws = store.getState().socket;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'chat', text }));
+    }
+    
+    // Clear input
+    input.value = '';
+  };
+  
+  return createElement('div', { class: 'game-chat-container' },
+    createElement('div', { 
+      class: 'game-chat-toggle',
+      onclick: toggleChat
+    }, 'Chat'),
+    createElement('div', { 
+      class: 'game-chat-panel',
+      style: { display: 'none' }
+    },
+      createElement('div', { class: 'game-chat-messages', id: 'chat-messages' }),
+      createElement('form', { 
+        class: 'game-chat-form',
+        onsubmit: handleChatSubmit
+      },
+        createElement('input', { 
+          type: 'text', 
+          id: 'game-chat-input',
+          placeholder: 'Type message...'
+        }),
+        createElement('button', { type: 'submit' }, 'Send')
+      )
+    )
+  );
+}
+
+// Update chat messages without triggering re-render
+function updateChatMessages() {
+  const messagesContainer = document.getElementById('chat-messages');
+  if (!messagesContainer) return;
+  
+  const { chatMessages } = store.getState();
+  
+  // Only show last 5 messages
+  const recentMessages = chatMessages.slice(-5);
+  
+  // Clear existing messages
+  messagesContainer.innerHTML = '';
+  
+  // Add recent messages
+  recentMessages.forEach(msg => {
+    const messageEl = document.createElement('div');
+    messageEl.className = 'game-chat-message';
+    
+    const authorEl = document.createElement('span');
+    authorEl.className = 'game-chat-author';
+    authorEl.textContent = `${msg.nick}: `;
+    
+    const textEl = document.createElement('span');
+    textEl.className = 'game-chat-text';
+    textEl.textContent = msg.text;
+    
+    messageEl.appendChild(authorEl);
+    messageEl.appendChild(textEl);
+    
+    messagesContainer.appendChild(messageEl);
+  });
+  
+  // Scroll to bottom
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+// Subscribe to chat updates
+store.subscribe(state => {
+  if (state.gameState === 'playing') {
+    updateChatMessages();
+  }
+});
+
 function GameApp() {
   const { map } = store.getState();
-  if (!map.grid.length) generateFallbackMap(); // only for offline preview
+  if (!map.grid.length) generateFallbackMap();
   return createElement('div', { class: 'game-app' },
     GameTitle(),
     PlayerInfo(),
+    GameChat(),
     GameGrid()
   );
 }
 
-// Movement
+// Movement and input handling
 let moving = false;
 const MOVE_MS = 150;
 
 function handleKeyDown(e) {
   if (moving || store.getState().gameState !== 'playing') return;
-
   const { players, localPlayerId } = store.getState();
   const me = players[localPlayerId];
   if (!me) return;
 
   let nx = me.x, ny = me.y, nd = me.direction || 'front';
   switch (e.key) {
-    case 'ArrowUp': ny -= me.speed; nd = 'back'; break;
-    case 'ArrowDown': ny += me.speed; nd = 'front'; break;
-    case 'ArrowLeft': nx -= me.speed; nd = 'left'; break;
-    case 'ArrowRight': nx += me.speed; nd = 'right'; break;
+    case 'ArrowUp': ny -= me.speed || 1; nd = 'back'; break;
+    case 'ArrowDown': ny += me.speed || 1; nd = 'front'; break;
+    case 'ArrowLeft': nx -= me.speed || 1; nd = 'left'; break;
+    case 'ArrowRight': nx += me.speed || 1; nd = 'right'; break;
     case ' ': placeBomb(me); return;
     default: return;
   }
 
-  // direction-only change
+  // Update direction if changed
   if (nd !== me.direction) {
     players[localPlayerId] = { ...me, direction: nd };
-    store.setState({ players: { ...players } });
+    store.setState({ players: { ...players } }, false); // Don't trigger re-render
     updatePlayerSprite(me.id, nd);
     sendPlayerMove(me.x, me.y, nd);
   }
@@ -255,28 +384,21 @@ function handleKeyDown(e) {
 
   moving = true;
   players[localPlayerId] = { ...me, x: nx, y: ny, direction: nd };
-  store.setState({ players: { ...players } });
+  store.setState({ players: { ...players } }, false); // Don't trigger re-render
   updatePlayerPosition(me.id, nx, ny);
   sendPlayerMove(nx, ny, nd);
   setTimeout(() => moving = false, MOVE_MS);
 }
 
-// safe passability check
 function isPassable(x, y) {
   const { map, bombs } = store.getState();
-  if (!map.grid.length || !map.grid[y] || !map.grid[y][x]) return false;
   if (x < 0 || y < 0 || x >= map.size || y >= map.size) return false;
   if (map.grid[y][x].type !== 'empty') return false;
   if (bombs.some(b => b.x === x && b.y === y)) return false;
   return true;
 }
 
-// keyboard listener
-function setupKeyboardControls() {
-  document.addEventListener('keydown', handleKeyDown, { passive: true });
-}
-
-// DOM helpers for sprite / position
+// DOM update helpers for player movement
 function updatePlayerSprite(id, dir) {
   const el = document.querySelector(`.player[data-player-id="${id}"]`);
   if (el) {
@@ -292,7 +414,17 @@ function updatePlayerPosition(id, x, y) {
   }
 }
 
-// Bombs, power-ups & explosions
+// Validation helper for movement
+function isValidMove(x, y) {
+  const { map, bombs } = store.getState();
+  if (x < 0 || y < 0 || x >= map.size || y >= map.size) return false;
+  const cell = map.grid[y]?.[x];
+  if (!cell || cell.type !== 'empty') return false;
+  if (bombs.some(b => b.x === x && b.y === y)) return false;
+  return true;
+}
+
+// Bomb, power-up, and explosion logic
 function placeBomb(player) {
   const { bombs } = store.getState();
   
@@ -316,7 +448,7 @@ function placeBomb(player) {
     playerId: player.id,
     x: player.x,
     y: player.y,
-    range: player.bombRange,
+    range: player.bombRange || 1,
     timer: 3000,
     countdown: 3,
     stage: 1
@@ -327,7 +459,7 @@ function placeBomb(player) {
   // Add to bombs list locally
   store.setState({
     bombs: [...bombs, newBomb]
-  });
+  }, false); // Don't trigger re-render
   
   // Send to server
   sendBombPlaced(newBomb);
@@ -382,19 +514,6 @@ function addBombElementToDOM(bomb) {
   
   container.appendChild(bombElement);
   console.log("Bomb successfully added to DOM with ID:", bombElement.id);
-  
-  setTimeout(() => {
-    const addedBomb = document.getElementById(`bomb-${bomb.id}`);
-    if (addedBomb) {
-      console.log("Bomb element styles:", {
-        backgroundImage: addedBomb.style.backgroundImage,
-        width: addedBomb.offsetWidth,
-        height: addedBomb.offsetHeight,
-        left: addedBomb.style.left,
-        top: addedBomb.style.top
-      });
-    }
-  }, 50);
 }
 
 function startBombCountdown(bomb) {
@@ -498,7 +617,7 @@ function explodeBomb(bomb) {
             ...map,
             grid: updatedGrid
           }
-        });
+        }, false); // Don't trigger re-render
         
         // Update the cell visually
         updateCellType(newX, newY, 'empty');
@@ -543,7 +662,7 @@ function explodeBomb(bomb) {
   store.setState({
     bombs: updatedBombs,
     explosions: allExplosions
-  });
+  }, false); // Don't trigger re-render
   
   // Spawn power-ups from destroyed blocks (approximately 30% chance)
   destroyedBlocks.forEach(block => {
@@ -595,7 +714,7 @@ function spawnPowerUp(x, y) {
   // Add to state
   store.setState({
     powerups: [...powerups, newPowerUp]
-  });
+  }, false); // Don't trigger re-render
   
   addPowerUpToDOM(newPowerUp);
 }
@@ -679,7 +798,7 @@ function removeExplosions(explosionsToRemove) {
     )
   );
   
-  store.setState({ explosions: updatedExplosions });
+  store.setState({ explosions: updatedExplosions }, false); // Don't trigger re-render
 }
 
 function checkPlayersInExplosion(explosions) {
@@ -723,19 +842,57 @@ function checkPlayersInExplosion(explosions) {
         
         // If it's the local player, show game over
         if (playerId === localPlayerId) {
-          alert('You were killed!');
+          setTimeout(() => {
+            alert('You were killed!');
+          }, 100);
         }
         
         // Remove from local state
         delete updatedPlayers[playerId];
+        
+        // Check if only one player remains
+        if (Object.keys(updatedPlayers).length === 1) {
+          const winnerId = Object.keys(updatedPlayers)[0];
+          const winner = updatedPlayers[winnerId];
+          setTimeout(() => {
+            alert(`Game Over! ${winner.nickname || 'Player ' + winnerId} wins!`);
+          }, 200);
+        }
       }
     }
   });
   
   if (playersHit) {
     // Apply damage to players
-    store.setState({ players: updatedPlayers });
+    store.setState({ players: updatedPlayers }, false); // Don't trigger re-render
+    
+    // Update UI to reflect changes
+    updatePlayerInfoUI();
   }
+}
+
+// Update player info UI without re-rendering
+function updatePlayerInfoUI() {
+  const { players, localPlayerId } = store.getState();
+  const me = players[localPlayerId];
+  
+  if (!me) return;
+  
+  // Update lives display
+  const livesEl = document.querySelector('.player-info div:nth-child(2)');
+  if (livesEl) livesEl.textContent = `Lives: ${me.lives}`;
+  
+  // Update bombs display
+  const bombsEl = document.querySelector('.player-info div:nth-child(3)');
+  if (bombsEl) bombsEl.textContent = `Bombs: ${me.bombCount || 1}`;
+  
+  // Update range display
+  const rangeEl = document.querySelector('.player-info div:nth-child(4)');
+  if (rangeEl) rangeEl.textContent = `Range: ${me.bombRange || 1}`;
+  
+  // Update speed display
+  const speedEl = document.querySelector('.player-info div:nth-child(5)');
+  if (speedEl) speedEl.textContent = `Speed: ${me.speed || 1}`;
 }
 
 function checkPowerUpCollection() {
@@ -783,7 +940,12 @@ function checkPowerUpCollection() {
       // Update this player in the state
       const updatedPlayers = { ...players };
       updatedPlayers[player.id] = updatedPlayer;
-      store.setState({ players: updatedPlayers });
+      store.setState({ players: updatedPlayers }, false); // Don't trigger re-render
+      
+      // If the local player collected a powerup, update the UI
+      if (player.id === localPlayerId) {
+        updatePlayerInfoUI();
+      }
       
       // Filter out collected powerups
       updatedPowerups = updatedPowerups.filter(
@@ -794,13 +956,36 @@ function checkPowerUpCollection() {
   
   // Update powerups state if any were collected
   if (powerupsRemoved) {
-    store.setState({ powerups: updatedPowerups });
+    store.setState({ powerups: updatedPowerups }, false); // Don't trigger re-render
   }
 }
 
-// Game loop
+// Game loop for continuous updates
 function gameLoop() {
   checkPowerUpCollection();
   requestAnimationFrame(gameLoop);
 }
+
+// Setup keyboard controls for player input
+function setupKeyboardControls() {
+  document.addEventListener('keydown', handleKeyDown, { passive: true });
+}
+
+// Initialize the game
+setupKeyboardControls();
 requestAnimationFrame(gameLoop);
+
+// Add this to your state store to prevent unnecessary re-renders
+if (typeof store.setState !== 'function' || store.setState.length === 1) {
+  const originalSetState = store.setState;
+  store.setState = function(newState, shouldNotify = true) {
+    let result = originalSetState.call(this, newState);
+    if (!shouldNotify) {
+      // Skip notification to prevent re-renders
+      return result;
+    }
+    
+    this.notify();
+    return result;
+  };
+}
